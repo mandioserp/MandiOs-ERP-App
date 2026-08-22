@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import api from '../../utils/api.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import SpokeSpinner from '../common/SpokeSpinner.jsx';
+import ChangePassword from './ChangePassword.jsx';
 
 export default function BusinessProfile({ showToast }) {
   const { user } = useAuth();
@@ -313,6 +314,9 @@ export default function BusinessProfile({ showToast }) {
           </div>
         )}
       </div>
+
+      {/* Admin Security & Password Change Section */}
+      <ChangePassword showToast={showToast} />
     </form>
   );
 }

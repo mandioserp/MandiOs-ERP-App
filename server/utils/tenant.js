@@ -14,3 +14,8 @@ export function buildTenantQuery(req, query = {}) {
   }
   return { ...query, tenantId };
 }
+
+export function assertTenantOwnership(req, record) {
+  if (!record || req?.user?.role === 'super_admin') return true;
+  return record.tenantId === getTenantId(req);
+}

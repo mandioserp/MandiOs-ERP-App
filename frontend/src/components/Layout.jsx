@@ -6,7 +6,8 @@ import { useTheme } from '../context/ThemeContext.jsx';
 import { TAB_TO_PATH, PATH_TO_TAB } from '../utils/routes.js';
 import {
   Home, Users, ShoppingBag, Boxes, FileText, DollarSign,
-  LogOut, Menu, X, ShieldAlert, Clock, Sun, Moon, Activity, Settings, Truck, Briefcase, Trash2, BarChart2, Calendar, Layers, RotateCcw
+  LogOut, Menu, X, ShieldAlert, Clock, Sun, Moon, Activity, Settings, Truck, Briefcase, Trash2, BarChart2, Calendar, Layers, RotateCcw,
+  Building2, Search
 } from 'lucide-react';
 
 export default function Layout({ children, currentTab: propCurrentTab, setCurrentTab: propSetCurrentTab }) {
@@ -89,8 +90,12 @@ export default function Layout({ children, currentTab: propCurrentTab, setCurren
   ];
 
   const superAdminMenu = [
-    { id: 'saas-dashboard', name: 'SaaS Management', icon: Activity },
-    { id: 'reports', name: 'SaaS Analytics', icon: FileText },
+    { id: 'saas-dashboard', name: 'Dashboard', icon: Activity },
+    { id: 'businesses', name: 'Businesses / Tenants', icon: Building2 },
+    { id: 'subscriptions', name: 'Subscriptions', icon: Layers },
+    { id: 'users', name: 'Users Overview', icon: Users },
+    { id: 'search', name: 'Global Search', icon: Search },
+    { id: 'audit', name: 'Audit Logs', icon: FileText },
     { id: 'settings', name: 'Platform Settings', icon: Settings },
   ];
 
@@ -144,7 +149,7 @@ export default function Layout({ children, currentTab: propCurrentTab, setCurren
             const Icon = item.icon;
             const isActive = currentTab === item.id;
 
-            if (item.id === 'settings') {
+            if (item.id === 'settings' && user.role !== 'super_admin') {
               const isAnySettingActive = currentTab.startsWith('settings');
               return (
                 <div key={item.id} className="space-y-1">
@@ -173,6 +178,7 @@ export default function Layout({ children, currentTab: propCurrentTab, setCurren
                         { subId: 'expenses', subName: 'Expense Categories' },
                         { subId: 'payments', subName: 'Payment Methods' },
                         { subId: 'invoice', subName: 'Invoice Layout' },
+                        { subId: 'password', subName: 'Change Password' },
                       ].map(sub => {
                         const isSubActive = currentTab === `settings_${sub.subId}`;
                         return (

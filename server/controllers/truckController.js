@@ -1,5 +1,5 @@
 import { Truck, AuditLog, Supplier } from '../models/index.js';
-import { buildTenantQuery, getTenantId } from '../utils/tenant.js';
+import { assertTenantOwnership, buildTenantQuery, getTenantId } from '../utils/tenant.js';
 
 export async function getTrucks(req, res) {
   try {
@@ -68,6 +68,7 @@ export async function editTruck(req, res) {
     if (!truck) {
       return res.status(404).json({ error: 'Truck not found.' });
     }
+    if (!assertTenantOwnership(req, truck)) return res.status(404).json({ error: 'Truck not found.' });
 
     let supplierName = truck.supplierName;
     if (supplierId && supplierId !== truck.supplierId) {

@@ -3,7 +3,8 @@ import api from '../../utils/api';
 import { useLanguage } from '../../context/LanguageContext';
 import { exportToCSV } from '../../utils/navigation';
 import { downloadLedgerPDF } from '../../utils/pdfExport';
-import { Download, Filter, Search, ArrowLeft, Calendar, User, DollarSign, RefreshCw, ArrowUpDown, ArrowDown, ArrowUp } from 'lucide-react';
+import { Download, Filter, Search, ArrowLeft, Calendar, User, DollarSign, RefreshCw, ArrowUpDown, ArrowDown, ArrowUp, Printer } from 'lucide-react';
+import PrintReportHeader from '../common/PrintReportHeader.jsx';
 
 export default function SupplierLedgerPage() {
   const { t } = useLanguage();
@@ -166,13 +167,39 @@ export default function SupplierLedgerPage() {
 
           <button
             onClick={handleDownloadPDF}
-            className="flex items-center space-x-2 px-5 py-2.5 rounded-xl bg-[#4F46E5] hover:bg-indigo-700 text-white text-xs font-bold shadow-lg shadow-indigo-500/20 transition-all"
+            className="flex items-center space-x-2 px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 text-xs font-bold transition-all"
           >
             <Download size={14} />
-            <span>Download PDF</span>
+            <span>PDF</span>
+          </button>
+
+          <button
+            onClick={() => window.print()}
+            className="flex items-center space-x-2 px-5 py-2.5 rounded-xl bg-[#4F46E5] hover:bg-indigo-700 text-white text-xs font-bold shadow-lg shadow-indigo-500/20 transition-all"
+          >
+            <Printer size={14} />
+            <span>Print Ledger</span>
           </button>
         </div>
       </div>
+
+      {/* Printable Letterhead & Account Summary */}
+      <PrintReportHeader
+        title="SUPPLIER / GROWER ACCOUNT STATEMENT / KHATA"
+        period={`${startDate || 'All-Time'} to ${endDate || 'Present'}`}
+        filters={[
+          { label: 'Supplier', value: `${supplierDetails?.name || 'Grower / Supplier'}${supplierDetails?.phone ? ` (${supplierDetails.phone})` : ''}` },
+          ...(postingType !== 'All' ? [{ label: 'Posting Type', value: postingType }] : [])
+        ]}
+        summaryMetrics={[
+          { label: 'Total Payments Disbursed (Debit)', value: `Rs. ${totalDebit.toLocaleString()}` },
+          { label: 'Net Consignment Sales (Credit)', value: `Rs. ${totalCredit.toLocaleString()}` },
+          {
+            label: 'Closing Balance',
+            value: `Rs. ${Math.abs(currentBalance).toLocaleString()} ${currentBalance > 0 ? '(Cr - Payable to Supplier)' : currentBalance < 0 ? '(Dr - Advance)' : '(Settled)'}`
+          }
+        ]}
+      />
 
       {/* Supplier Selection & Summary Banner */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 print:hidden">

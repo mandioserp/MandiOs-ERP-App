@@ -2,6 +2,10 @@ import bcryptjs from 'bcryptjs';
 import { Business, GlobalSettings, User, Product, Supplier, Customer, StockEntry, Sale, Ledger, Payment, AuditLog, Expense, Truck, Employee, Salary, SalaryAdvance } from '../models/index.js';
 
 export async function seedDatabase() {
+  if (process.env.NODE_ENV === 'production' || process.env.ENABLE_DEMO_SEED !== 'true') {
+    return;
+  }
+
   try {
     const salt = bcryptjs.genSaltSync(10);
     const superAdminPassword = bcryptjs.hashSync('super123', salt);

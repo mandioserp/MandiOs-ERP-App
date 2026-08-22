@@ -25,10 +25,83 @@ export function AuthProvider({ children }) {
     try {
       localStorage.removeItem('mandi_token');
       localStorage.removeItem('mandi_login_time');
+      localStorage.removeItem('mandi_super_admin_backup_token');
+      localStorage.removeItem('mandi_super_admin_backup_user');
     } catch {}
     setToken(null);
     setUser(null);
   }, []);
+
+  const isImpersonated = Boolean(
+    (user && user.isImpersonated) || 
+    localStorage.getItem('mandi_super_admin_backup_token')
+  );
+
+  const impersonateTenant = async (businessId) => {
+    try {
+      const res = await api.post(`/super-admin/businesses/${businessId}/impersonate`);
+      const { token: impersonatedToken, user: impersonatedUser, business } = res.data;
+
+      if (!impersonatedToken) {
+        return { success: false, error: 'Failed to obtain impersonation credentials.' };
+      }
+
+      // Backup current super admin session
+      const currentToken = getStoredToken();
+      if (currentToken) {
+        localStorage.setItem('mandi_super_admin_backup_token', currentToken);
+        if (user) {
+          localStorage.setItem('mandi_super_admin_backup_user', JSON.stringify(user));
+        }
+      }
+
+      localStorage.setItem('mandi_token', impersonatedToken);
+      localStorage.setItem('mandi_login_time', Date.now().toString());
+      setToken(impersonatedToken);
+      setUser(impersonatedUser);
+
+      return { success: true, business };
+    } catch (err) {
+      return { 
+        success: false, 
+        error: err.response?.data?.error || 'Failed to start support impersonation session.' 
+      };
+    }
+  };
+
+  const exitImpersonation = async () => {
+    try {
+      const backupToken = localStorage.getItem('mandi_super_admin_backup_token');
+      const backupUserStr = localStorage.getItem('mandi_super_admin_backup_user');
+
+      localStorage.removeItem('mandi_super_admin_backup_token');
+      localStorage.removeItem('mandi_super_admin_backup_user');
+
+      if (backupToken) {
+        localStorage.setItem('mandi_token', backupToken);
+        setToken(backupToken);
+        if (backupUserStr) {
+          try {
+            setUser(JSON.parse(backupUserStr));
+          } catch {
+            setUser(null);
+          }
+        }
+        // Refresh original super admin profile from server
+        try {
+          const res = await api.get('/auth/profile');
+          if (res.data) setUser(res.data);
+        } catch {}
+        return { success: true };
+      } else {
+        logout();
+        return { success: true };
+      }
+    } catch (err) {
+      logout();
+      return { success: false, error: 'Failed to restore Super Admin session.' };
+    }
+  };
 
   const isSessionExpired = useCallback(() => {
     try {
@@ -87,9 +160,9 @@ export function AuthProvider({ children }) {
     return () => clearInterval(interval);
   }, [token, isSessionExpired, logout]);
 
-  const login = async (email, password, role) => {
+  const login = async (identifier, password, role) => {
     try {
-      const res = await api.post('/auth/login', { email, password, role });
+      const res = await api.post('/auth/login', { identifier, email: identifier, password, role });
       const { token: receivedToken, user: receivedUser } = res.data;
 
       if (!receivedToken) {
@@ -124,7 +197,17 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, logout, refreshProfile }}>
+    <AuthContext.Provider value={{ 
+      user, 
+      token, 
+      loading, 
+      login, 
+      logout, 
+      refreshProfile,
+      impersonateTenant,
+      exitImpersonation,
+      isImpersonated
+    }}>
       {children}
     </AuthContext.Provider>
   );

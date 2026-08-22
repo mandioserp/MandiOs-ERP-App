@@ -24,6 +24,7 @@ import {
   ChevronRight,
   Coins
 } from 'lucide-react';
+import PrintReportHeader from '../common/PrintReportHeader.jsx';
 import {
   ResponsiveContainer,
   BarChart,
@@ -153,7 +154,10 @@ export default function DayBookReportPage() {
     totalArrivalVolume: 0,
     totalSalesAmount: 0,
     totalCommissionEarned: 0,
-    totalShopExpenses: 0
+    totalShopExpenses: 0,
+    totalReturnedVolume: 0,
+    totalReturnedAmount: 0,
+    totalReturnedCount: 0
   };
 
   const rawRows = reportData?.rows || [];
@@ -399,7 +403,7 @@ export default function DayBookReportPage() {
       </div>
 
       {/* ----------------- 5 CORE SUMMARY KPI CARDS ----------------- */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4 print:hidden">
         {/* Card 1: Opening Till */}
         <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden">
           <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 dark:text-slate-400 block">
@@ -477,7 +481,7 @@ export default function DayBookReportPage() {
       </div>
 
       {/* ----------------- INTERACTIVE VIEW TABS ----------------- */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm overflow-hidden">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm overflow-hidden print:hidden">
         {/* Tab Headers & Filters */}
         <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4 print:hidden">
           <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
@@ -536,6 +540,7 @@ export default function DayBookReportPage() {
             >
               <option value="All">All Transactions (تمام اندراجات)</option>
               <option value="Cash Flow Only / Rokar (نقد بہاؤ)">🟢 Cash Flow Only / Rokar (نقد روکڑ)</option>
+              <option value="Produce Returns (واپسی مال)">↩️ Produce Returns (واپسی مال)</option>
               <option value="Customer Receipts (وصولیاں)">📥 Customer Receipts (وصولیاں)</option>
               <option value="Supplier Payments (ادائیگیاں)">📤 Supplier Payments (ادائیگیاں)</option>
               <option value="Walk-in Cash Sales (نقد فروخت)">🛒 Walk-In Cash Sales (نقد فروخت)</option>
@@ -766,13 +771,38 @@ export default function DayBookReportPage() {
                               ? 'bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
                               : row.type === 'Payment' || row.type === 'Expense'
                               ? 'bg-rose-100 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800'
+                              : row.type === 'Produce Return'
+                              ? 'bg-amber-100 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700'
                               : 'bg-indigo-100 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800'
                           }`}>
-                            {row.type}
+                            {row.type === 'Produce Return' ? '↩ Produce Return' : row.type}
                           </span>
                         </td>
                         <td className="p-3 text-slate-600 dark:text-slate-300 text-xs">
-                          {row.item}
+                          {row.type === 'Produce Return' ? (
+                            <div className="space-y-0.5">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="font-bold text-slate-900 dark:text-white">{row.productName || 'Produce'}</span>
+                                {row.produceCondition && (
+                                  <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
+                                    row.produceCondition === 'Damaged' ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300' :
+                                    row.produceCondition === 'Spoiled' ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300' :
+                                    'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
+                                  }`}>
+                                    {row.produceCondition}
+                                  </span>
+                                )}
+                                {row.returnNumber && (
+                                  <span className="font-mono text-[10px] text-slate-400 bg-slate-100 dark:bg-slate-800 px-1 rounded">
+                                    {row.returnNumber}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-slate-500 dark:text-slate-400">{row.item}</p>
+                            </div>
+                          ) : (
+                            row.item
+                          )}
                         </td>
                         <td className="p-3 text-center text-slate-500 dark:text-slate-400 text-[11px] whitespace-nowrap">
                           {row.paymentMethod}
@@ -867,6 +897,22 @@ export default function DayBookReportPage() {
                         Rs. {summary.totalShopExpenses.toLocaleString()}
                       </span>
                     </div>
+                    <div className="p-3 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 col-span-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] text-slate-400 block font-semibold">Produce Returns (واپسی مال)</span>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300">
+                          {summary.totalReturnedCount || 0} Return Vouchers
+                        </span>
+                      </div>
+                      <div className="flex items-baseline gap-2 mt-1">
+                        <span className="text-lg font-black text-amber-600 dark:text-amber-400">
+                          {summary.totalReturnedVolume?.toLocaleString() || 0} crates returned
+                        </span>
+                        <span className="text-xs text-slate-500 dark:text-slate-400 font-semibold">
+                          (Value: Rs. {summary.totalReturnedAmount?.toLocaleString() || 0})
+                        </span>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -889,22 +935,21 @@ export default function DayBookReportPage() {
 
       {/* ----------------- PRINTABLE MANDI STATEMENT (A4 ROZNAMCHA) ----------------- */}
       <div className="hidden print:block space-y-4 text-black bg-white">
-        <div className="text-center border-b-2 border-black pb-3">
-          <h1 className="text-2xl font-black uppercase tracking-wider">MANDI OS — DAILY ROZNAMCHA / DAY BOOK</h1>
-          <p className="text-xs font-bold mt-1">Audit Period: {startDate} to {endDate} | Printed: {new Date().toLocaleString()}</p>
-        </div>
-
-        {/* Printable KPI Table */}
-        <table className="w-full border-collapse border border-black text-xs">
-          <tbody>
-            <tr className="bg-gray-100 font-bold">
-              <td className="border border-black p-2">Opening Till: Rs. {summary.openingBalance.toLocaleString()}</td>
-              <td className="border border-black p-2">Total Jama (In): Rs. {summary.totalInflows.toLocaleString()}</td>
-              <td className="border border-black p-2">Total Banam (Out): Rs. {summary.totalOutflows.toLocaleString()}</td>
-              <td className="border border-black p-2">Closing Till: Rs. {summary.closingBalance.toLocaleString()}</td>
-            </tr>
-          </tbody>
-        </table>
+        <PrintReportHeader
+          title="DAILY ROZNAMCHA / DAY BOOK STATEMENT"
+          period={`${startDate} to ${endDate}`}
+          filters={[
+            ...(transactionType !== 'All' ? [{ label: 'Type', value: transactionType }] : []),
+            ...(paymentMode !== 'All' ? [{ label: 'Payment Mode', value: paymentMode }] : []),
+            ...(partyType !== 'All' ? [{ label: 'Party Type', value: partyType }] : [])
+          ]}
+          summaryMetrics={[
+            { label: 'Opening Till', value: `Rs. ${summary.openingBalance.toLocaleString()}` },
+            { label: 'Total Jama (Inflows)', value: `Rs. ${summary.totalInflows.toLocaleString()}` },
+            { label: 'Total Banam (Outflows)', value: `Rs. ${summary.totalOutflows.toLocaleString()}` },
+            { label: 'Closing Till Balance', value: `Rs. ${summary.closingBalance.toLocaleString()}` }
+          ]}
+        />
 
         {/* Printable Transactions */}
         <table className="w-full border-collapse border border-black text-[10px] mt-3">

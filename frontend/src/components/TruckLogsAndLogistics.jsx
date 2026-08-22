@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import api from '../utils/api.js';
 import { useConfirm } from '../context/ConfirmContext.jsx';
+import DialogAlert from './common/DialogAlert.jsx';
 import {
   Truck, Clock, CheckSquare, Plus, Pencil, Trash, X, Search, RefreshCw
 } from 'lucide-react';
@@ -19,6 +20,7 @@ export default function TruckLogsAndLogistics({ suppliers: propSuppliers = [], s
   const [modalMode, setModalMode] = useState('add'); // 'add' or 'edit'
   const [selectedTruck, setSelectedTruck] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [modalAlert, setModalAlert] = useState(null);
   const [formData, setFormData] = useState({
     truckNumber: '',
     driverName: '',
@@ -86,6 +88,7 @@ export default function TruckLogsAndLogistics({ suppliers: propSuppliers = [], s
   const openModal = (mode, truck = null) => {
     setModalMode(mode);
     setSelectedTruck(truck);
+    setModalAlert(null);
     if (mode === 'edit' && truck) {
       setFormData({
         truckNumber: truck.truckNumber || '',
@@ -115,6 +118,7 @@ export default function TruckLogsAndLogistics({ suppliers: propSuppliers = [], s
   const closeModal = () => {
     setIsModalOpen(false);
     setSelectedTruck(null);
+    setModalAlert(null);
   };
 
   const handleFormChange = (e) => {
@@ -136,6 +140,7 @@ export default function TruckLogsAndLogistics({ suppliers: propSuppliers = [], s
     e.preventDefault();
     if (submitting) return;
     setSubmitting(true);
+    setModalAlert(null);
     try {
       const payload = {
         ...formData,
@@ -153,7 +158,8 @@ export default function TruckLogsAndLogistics({ suppliers: propSuppliers = [], s
       closeModal();
       fetchTrucks();
     } catch (err) {
-      notify(err.response?.data?.error || 'Failed to save vehicle entry', 'error');
+      const errMsg = err.response?.data?.error || 'Failed to save vehicle entry';
+      setModalAlert({ type: 'error', message: errMsg });
     } finally {
       setSubmitting(false);
     }
@@ -398,6 +404,8 @@ export default function TruckLogsAndLogistics({ suppliers: propSuppliers = [], s
                 Track incoming trucks, grower assignments, and crate loads
               </p>
             </div>
+
+            <DialogAlert alert={modalAlert} onDismiss={() => setModalAlert(null)} />
 
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="grid grid-cols-2 gap-4">

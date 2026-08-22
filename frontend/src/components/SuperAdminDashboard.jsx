@@ -1,765 +1,1374 @@
 import React, { useState, useEffect } from 'react';
-import api from '../utils/api.js';
-import { useAuth } from '../context/AuthContext.jsx';
-import {
-  Building2, Users, DollarSign, ShieldCheck, Plus, Search, Filter, RefreshCw,
-  MoreVertical, CheckCircle2, XCircle, AlertTriangle, KeyRound, ExternalLink,
-  Edit3, Ban, PlayCircle, Layers, Calendar, Mail, User, ShieldAlert, Sparkles,
-  TrendingUp, Activity, Check, Globe
+import { useLocation, useNavigate } from 'react-router-dom';
+import { 
+  Building2, Users, Layers, Search, FileText, Settings, 
+  Plus, Edit2, Eye, Calendar, Clock, Key, LogIn, CheckCircle, 
+  XCircle, RefreshCw, Sparkles, AlertCircle, X, Shield, HelpCircle
 } from 'lucide-react';
-import SpokeSpinner from './common/SpokeSpinner.jsx';
+import api from '../utils/api.js';
+import { TAB_TO_PATH, PATH_TO_TAB } from '../utils/routes.js';
+import DialogAlert from './common/DialogAlert.jsx';
+import SuperAdminOverview from './superAdmin/SuperAdminOverview.jsx';
+import BusinessManagement from './superAdmin/BusinessManagement.jsx';
+import SubscriptionManagement from './superAdmin/SubscriptionManagement.jsx';
+import UserOverview from './superAdmin/UserOverview.jsx';
+import SuperAdminSearch from './superAdmin/SuperAdminSearch.jsx';
+import SuperAdminAuditLogs from './superAdmin/SuperAdminAuditLogs.jsx';
+import PlatformSettings from './superAdmin/PlatformSettings.jsx';
 
-export default function SuperAdminDashboard({ tab = 'saas-dashboard' }) {
-  const { user } = useAuth();
+export default function SuperAdminDashboard({ tab = 'saas-dashboard', onTabChange }) {
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  // Derive active tab from URL pathname, fallback to prop
+  const currentPathTab = PATH_TO_TAB[location.pathname];
+  const activeTab = currentPathTab || tab || 'saas-dashboard';
+
+  const handleTabChange = (newTabId) => {
+    const path = TAB_TO_PATH[newTabId] || '/saas-dashboard';
+    navigate(path);
+    if (onTabChange) {
+      onTabChange(newTabId);
+    }
+  };
+  
+  // Data State
   const [businesses, setBusinesses] = useState([]);
-  const [stats, setStats] = useState({
-    totalBusinesses: 0,
-    activeBusinesses: 0,
-    suspendedBusinesses: 0,
-    expiredBusinesses: 0,
-    totalUsers: 0
-  });
-  const [loading, setLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState('All');
+  const [stats, setStats] = useState(null);
+  const [plans, setPlans] = useState([]);
+  const [allUsers, setAllUsers] = useState([]);
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [modalAlert, setModalAlert] = useState(null);
 
-  // Modals
-  const [showCreateModal, setShowCreateModal] = useState(false);
-  const [showEditModal, setShowEditModal] = useState(false);
-  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  // Filters & Query State for Business Management
+  const [bizSearchQuery, setBizSearchQuery] = useState('');
+  const [bizStatusFilter, setBizStatusFilter] = useState('all');
+  const [bizPlanFilter, setBizPlanFilter] = useState('all');
+
+  // Modals State
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [viewModalOpen, setViewModalOpen] = useState(false);
+  const [extendModalOpen, setExtendModalOpen] = useState(false);
+  const [resetPassModalOpen, setResetPassModalOpen] = useState(false);
+  const [planModalOpen, setPlanModalOpen] = useState(false);
+  const [viewUserModalOpen, setViewUserModalOpen] = useState(false);
   const [selectedBusiness, setSelectedBusiness] = useState(null);
+  const [selectedUser, setSelectedUser] = useState(null);
+  const [selectedPlan, setSelectedPlan] = useState(null);
 
-  // Form States
-  const [createForm, setCreateForm] = useState({
+  // Forms State
+  const [createFormData, setCreateFormData] = useState({
     name: '',
+    arthiCode: '',
     ownerName: '',
     email: '',
     password: '',
     phone: '',
+    address: '',
+    city: '',
+    country: 'Pakistan',
     plan: 'Pro',
-    tenantId: '',
-    subscriptionExpiresAt: ''
+    maxUsers: 10,
+    subscriptionExpiresAt: '',
   });
 
-  const [editForm, setEditForm] = useState({
+  const [editFormData, setEditFormData] = useState({
     name: '',
+    businessCode: '',
+    arthiCode: '',
     ownerName: '',
     email: '',
     phone: '',
+    address: '',
+    city: '',
+    country: 'Pakistan',
     plan: 'Pro',
     status: 'Active',
-    subscriptionExpiresAt: ''
+    subscriptionExpiresAt: '',
   });
 
-  const [newPassword, setNewPassword] = useState('');
-  const [actionLoading, setActionLoading] = useState(false);
-  const [actionMessage, setActionMessage] = useState({ type: '', text: '' });
+  const [extendFormData, setExtendFormData] = useState({
+    extendDays: 30,
+    subscriptionExpiryDate: '',
+    subscriptionPlan: 'Pro',
+  });
 
-  // Fetch Businesses & Stats
-  const fetchData = async () => {
+  const [resetPassData, setResetPassData] = useState({
+    newPassword: '',
+  });
+
+  const [planFormData, setPlanFormData] = useState({
+    name: '',
+    priceMonthly: 5000,
+    priceAnnual: 50000,
+    duration: '1 Month',
+    maxUsers: 5,
+    maxProducts: 100,
+    description: '',
+    features: {
+      logistics: true,
+      returnsModule: true,
+      reportsExport: true,
+      prioritySupport: false,
+    },
+    isPopular: false,
+    status: 'Active',
+  });
+
+  // Sync prop tab changes via routing
+  useEffect(() => {
+    if (tab && !currentPathTab) {
+      handleTabChange(tab);
+    }
+  }, [tab, currentPathTab]);
+
+  // Load Initial Data
+  useEffect(() => {
+    fetchInitialData();
+  }, []);
+
+  const showToast = (message, type = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  };
+
+  const fetchInitialData = async () => {
     setLoading(true);
     try {
-      const [bizRes, statsRes] = await Promise.all([
+      const [bizRes, statsRes, plansRes, usersRes, logsRes] = await Promise.all([
         api.get('/super-admin/businesses'),
-        api.get('/super-admin/stats')
+        api.get('/super-admin/stats'),
+        api.get('/super-admin/plans'),
+        api.get('/super-admin/users'),
+        api.get('/super-admin/audit-logs'),
       ]);
       setBusinesses(bizRes.data || []);
-      setStats(statsRes.data || {});
+      setStats(statsRes.data || null);
+      setPlans(plansRes.data || []);
+      setAllUsers(usersRes.data || []);
+      setAuditLogs(logsRes.data || []);
     } catch (err) {
-      console.error('Failed to fetch Super Admin data:', err);
+      console.error('Error loading super admin data:', err);
+      showToast('Failed to load platform data.', 'error');
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  // --- Handlers for Businesses ---
+  const handleOpenCreateBusiness = async () => {
+    setCreateFormData({
+      name: '',
+      arthiCode: '',
+      ownerName: '',
+      email: '',
+      password: '',
+      phone: '',
+      address: '',
+      city: '',
+      country: 'Pakistan',
+      plan: 'Pro',
+      maxUsers: 10,
+      subscriptionExpiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+    });
+    setModalAlert(null);
+    setCreateModalOpen(true);
+  };
 
-  const handleCreateBusiness = async (e) => {
-    e.preventDefault();
-    setActionLoading(true);
-    setActionMessage({ type: '', text: '' });
+  const handleSuggestArthiCode = async (bizName) => {
+    if (!bizName) return;
     try {
-      await api.post('/super-admin/businesses', createForm);
-      setActionMessage({ type: 'success', text: 'Business registered successfully!' });
-      setShowCreateModal(false);
-      setCreateForm({
-        name: '', ownerName: '', email: '', password: '', phone: '', plan: 'Pro', tenantId: '', subscriptionExpiresAt: ''
-      });
-      fetchData();
+      const res = await api.get(`/super-admin/businesses/suggest-arthi-code?name=${encodeURIComponent(bizName)}`);
+      if (res.data?.suggestedCode) {
+        setCreateFormData(prev => ({ ...prev, arthiCode: res.data.suggestedCode }));
+      }
     } catch (err) {
-      setActionMessage({ type: 'error', text: err.response?.data?.error || 'Failed to create business.' });
-    } finally {
-      setActionLoading(false);
+      console.error('Suggest code error:', err);
     }
   };
 
-  const handleEditBusiness = async (e) => {
+  const handleCreateBusinessSubmit = async (e) => {
+    e.preventDefault();
+    if (!createFormData.name || !createFormData.email) {
+      setModalAlert({ type: 'error', message: 'Please fill in Business Name and Owner Email.' });
+      return;
+    }
+    setModalAlert(null);
+    try {
+      await api.post('/super-admin/businesses', createFormData);
+      showToast('Business tenant registered successfully!', 'success');
+      setCreateModalOpen(false);
+      setModalAlert(null);
+      fetchInitialData();
+    } catch (err) {
+      const errMsg = err.response?.data?.error || 'Failed to create business.';
+      setModalAlert({ type: 'error', message: errMsg });
+    }
+  };
+
+  const handleOpenEditBusiness = (biz) => {
+    setSelectedBusiness(biz);
+    setEditFormData({
+      name: biz.name || biz.businessName || '',
+      businessCode: biz.businessCode || '',
+      arthiCode: biz.arthiCode || '',
+      ownerName: biz.ownerName || '',
+      email: biz.email || '',
+      phone: biz.phone || '',
+      address: biz.address || '',
+      city: biz.city || '',
+      country: biz.country || 'Pakistan',
+      plan: biz.plan || biz.subscriptionPlan || 'Pro',
+      status: biz.status || biz.subscriptionStatus || 'Active',
+      subscriptionExpiresAt: biz.subscriptionExpiresAt || biz.subscriptionExpiryDate || '',
+    });
+    setModalAlert(null);
+    setEditModalOpen(true);
+  };
+
+  const handleEditBusinessSubmit = async (e) => {
     e.preventDefault();
     if (!selectedBusiness) return;
-    setActionLoading(true);
+    const bizId = selectedBusiness.id || selectedBusiness._id;
+    setModalAlert(null);
     try {
-      await api.put(`/super-admin/businesses/${selectedBusiness.id || selectedBusiness._id}`, editForm);
-      setActionMessage({ type: 'success', text: 'Business details updated successfully!' });
-      setShowEditModal(false);
-      fetchData();
+      await api.put(`/super-admin/businesses/${bizId}`, editFormData);
+      showToast('Business details updated successfully!', 'success');
+      setEditModalOpen(false);
+      setModalAlert(null);
+      fetchInitialData();
     } catch (err) {
-      setActionMessage({ type: 'error', text: err.response?.data?.error || 'Failed to update business.' });
-    } finally {
-      setActionLoading(false);
+      const errMsg = err.response?.data?.error || 'Failed to update business.';
+      setModalAlert({ type: 'error', message: errMsg });
     }
   };
 
-  const handleToggleStatus = async (biz, newStatus) => {
+  const handleOpenViewBusiness = (biz) => {
+    setSelectedBusiness(biz);
+    setViewModalOpen(true);
+  };
+
+  const handleToggleBusinessStatus = async (biz) => {
+    const bizId = biz.id || biz._id;
+    const nextStatus = biz.status === 'Active' ? 'Suspended' : 'Active';
+    const confirmMsg = `Are you sure you want to ${nextStatus === 'Active' ? 'activate' : 'suspend'} "${biz.name}"?`;
+    if (!window.confirm(confirmMsg)) return;
+
     try {
-      await api.patch(`/super-admin/businesses/${biz.id || biz._id}/status`, { status: newStatus });
-      fetchData();
+      await api.patch(`/super-admin/businesses/${bizId}/status`, { status: nextStatus, isActive: nextStatus === 'Active' });
+      showToast(`Business is now ${nextStatus}.`, 'success');
+      fetchInitialData();
     } catch (err) {
-      alert(err.response?.data?.error || 'Failed to update business status.');
+      showToast('Failed to toggle business status.', 'error');
     }
   };
 
-  const handleResetPassword = async (e) => {
+  const handleOpenExtendModal = (biz) => {
+    setSelectedBusiness(biz);
+    const currentExpiry = biz.subscriptionExpiresAt || biz.subscriptionExpiryDate;
+    setExtendFormData({
+      extendDays: 30,
+      subscriptionExpiryDate: currentExpiry || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+      subscriptionPlan: biz.plan || biz.subscriptionPlan || 'Pro',
+    });
+    setExtendModalOpen(true);
+  };
+
+  const handleExtendSubscriptionSubmit = async (e) => {
     e.preventDefault();
-    if (!selectedBusiness || !newPassword) return;
-    setActionLoading(true);
+    if (!selectedBusiness) return;
+    const bizId = selectedBusiness.id || selectedBusiness._id;
     try {
-      await api.post(`/super-admin/businesses/${selectedBusiness.id || selectedBusiness._id}/reset-password`, { newPassword });
-      setActionMessage({ type: 'success', text: `Password for ${selectedBusiness.name} updated successfully!` });
-      setShowPasswordModal(false);
-      setNewPassword('');
+      await api.post(`/super-admin/businesses/${bizId}/renew`, {
+        subscriptionExpiryDate: extendFormData.subscriptionExpiryDate,
+        subscriptionPlan: extendFormData.subscriptionPlan,
+      });
+      showToast('Subscription updated and extended successfully!', 'success');
+      setExtendModalOpen(false);
+      fetchInitialData();
     } catch (err) {
-      setActionMessage({ type: 'error', text: err.response?.data?.error || 'Failed to reset password.' });
-    } finally {
-      setActionLoading(false);
+      showToast('Failed to renew subscription.', 'error');
     }
   };
 
-  // Filtered Businesses
-  const filteredBusinesses = businesses.filter(b => {
-    const matchesSearch = (b.name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          (b.tenantId || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          (b.email || '').toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesStatus = statusFilter === 'All' || b.status === statusFilter;
-    return matchesSearch && matchesStatus;
-  });
+  const handleOpenResetPassModal = (biz) => {
+    setSelectedBusiness(biz);
+    setResetPassData({ newPassword: '' });
+    setResetPassModalOpen(true);
+  };
+
+  const handleResetPassSubmit = async (e) => {
+    e.preventDefault();
+    if (!selectedBusiness) return;
+    const bizId = selectedBusiness.id || selectedBusiness._id;
+    try {
+      await api.post(`/super-admin/businesses/${bizId}/reset-password`, resetPassData);
+      showToast('Owner password reset successfully!', 'success');
+      setResetPassModalOpen(false);
+    } catch (err) {
+      showToast(err.response?.data?.error || 'Failed to reset password.', 'error');
+    }
+  };
+
+  const handleImpersonate = async (biz) => {
+    const bizId = biz.id || biz._id;
+    try {
+      const res = await api.post(`/super-admin/businesses/${bizId}/impersonate`);
+      if (res.data?.token) {
+        localStorage.setItem('token', res.data.token);
+        localStorage.setItem('user', JSON.stringify(res.data.user));
+        localStorage.setItem('currentTenantId', res.data.user.tenantId);
+        window.location.href = '/home';
+      }
+    } catch (err) {
+      showToast(err.response?.data?.error || 'Support impersonation failed.', 'error');
+    }
+  };
+
+  // --- Handlers for Subscription Plans ---
+  const handleOpenCreatePlan = () => {
+    setSelectedPlan(null);
+    setPlanFormData({
+      name: '',
+      priceMonthly: 5000,
+      priceAnnual: 50000,
+      duration: '1 Month',
+      maxUsers: 5,
+      maxProducts: 100,
+      description: '',
+      features: { logistics: true, returnsModule: true, reportsExport: true, prioritySupport: false },
+      isPopular: false,
+      status: 'Active',
+    });
+    setPlanModalOpen(true);
+  };
+
+  const handleOpenEditPlan = (plan) => {
+    setSelectedPlan(plan);
+    setPlanFormData({
+      name: plan.name || '',
+      priceMonthly: plan.priceMonthly || 0,
+      priceAnnual: plan.priceAnnual || 0,
+      duration: plan.duration || '1 Month',
+      maxUsers: plan.maxUsers || 5,
+      maxProducts: plan.maxProducts || 100,
+      description: plan.description || '',
+      features: plan.features || { logistics: true, returnsModule: true, reportsExport: true, prioritySupport: false },
+      isPopular: Boolean(plan.isPopular),
+      status: plan.status || 'Active',
+    });
+    setPlanModalOpen(true);
+  };
+
+  const handlePlanFormSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      if (selectedPlan) {
+        const pId = selectedPlan.id || selectedPlan._id;
+        await api.put(`/super-admin/plans/${pId}`, planFormData);
+        showToast('Plan updated successfully!', 'success');
+      } else {
+        await api.post('/super-admin/plans', planFormData);
+        showToast('New plan created successfully!', 'success');
+      }
+      setPlanModalOpen(false);
+      fetchInitialData();
+    } catch (err) {
+      showToast('Failed to save subscription plan.', 'error');
+    }
+  };
+
+  const handleTogglePlanStatus = async (plan) => {
+    const pId = plan.id || plan._id;
+    try {
+      await api.patch(`/super-admin/plans/${pId}/status`);
+      showToast('Plan status updated!', 'success');
+      fetchInitialData();
+    } catch (err) {
+      showToast('Failed to update plan status.', 'error');
+    }
+  };
+
+  const handleDeletePlan = async (plan) => {
+    const pId = plan.id || plan._id;
+    if (!window.confirm(`Delete plan "${plan.name}"?`)) return;
+    try {
+      await api.delete(`/super-admin/plans/${pId}`);
+      showToast('Plan removed.', 'success');
+      fetchInitialData();
+    } catch (err) {
+      showToast('Failed to delete plan.', 'error');
+    }
+  };
+
+  // --- Handlers for User Overview ---
+  const handleToggleUserStatus = async (u) => {
+    const uId = u.id || u._id;
+    try {
+      await api.patch(`/super-admin/users/${uId}/status`);
+      showToast('User status updated successfully.', 'success');
+      fetchInitialData();
+    } catch (err) {
+      showToast('Failed to update user status.', 'error');
+    }
+  };
+
+  const handleViewUserDetails = (u) => {
+    setSelectedUser(u);
+    setViewUserModalOpen(true);
+  };
 
   return (
-    <div className="space-y-8 animate-fade-in pb-12">
-      
-      {/* Top Banner Header */}
-      <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 p-8 text-white border border-indigo-500/20 shadow-2xl">
-        <div className="absolute top-0 right-0 -mt-8 -mr-8 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />
-        <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-6">
-          <div className="space-y-2">
-            <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-indigo-500/20 border border-indigo-500/30 text-indigo-300 text-xs font-bold uppercase tracking-wider">
-              <ShieldCheck size={14} className="text-indigo-400" />
-              <span>Super Admin Master Portal</span>
-            </div>
-            <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
-              MandiOS SaaS Management System
-            </h1>
-            <p className="text-sm text-slate-300 max-w-2xl">
-              Centralized platform administration. Manage tenant businesses, subscription plans, system access, and multi-tenant telemetry.
-            </p>
-          </div>
-
-          <div className="flex items-center space-x-3 shrink-0">
-            <button
-              onClick={() => setShowCreateModal(true)}
-              className="px-5 py-3 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-black text-xs uppercase tracking-wider shadow-lg shadow-emerald-500/20 flex items-center space-x-2 transition-all cursor-pointer"
-            >
-              <Plus size={16} />
-              <span>Register New Business</span>
-            </button>
-            <button
-              onClick={fetchData}
-              className="p-3 rounded-2xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 transition-all cursor-pointer border border-slate-700"
-              title="Refresh Data"
-            >
-              <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Action Notification Banner */}
-      {actionMessage.text && (
-        <div className={`p-4 rounded-2xl border flex items-center justify-between text-xs font-bold ${
-          actionMessage.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-rose-500/10 border-rose-500/30 text-rose-400'
+    <div className="space-y-6 max-w-7xl mx-auto pb-12">
+      {/* Toast Notification */}
+      {toast && (
+        <div className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-xl shadow-xl flex items-center gap-2.5 text-xs font-semibold animate-in slide-in-from-top-2 ${
+          toast.type === 'error' ? 'bg-red-600 text-white' : 'bg-emerald-600 text-white'
         }`}>
-          <div className="flex items-center space-x-2">
-            {actionMessage.type === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
-            <span>{actionMessage.text}</span>
-          </div>
-          <button onClick={() => setActionMessage({ type: '', text: '' })} className="text-slate-400 hover:text-white">
-            <XCircle size={16} />
-          </button>
+          {toast.type === 'error' ? <AlertCircle className="w-4 h-4" /> : <CheckCircle className="w-4 h-4" />}
+          <span>{toast.message}</span>
         </div>
       )}
 
-      {/* Executive SaaS KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-        
-        <div className="p-6 rounded-3xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-400">Total Registered Businesses</span>
-            <div className="p-3 rounded-2xl bg-indigo-500/10 text-indigo-500">
-              <Building2 size={20} />
-            </div>
-          </div>
-          <div className="mt-4">
-            <h3 className="text-3xl font-black text-slate-900 dark:text-white">{stats.totalBusinesses || 0}</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 font-medium">Tenant Mandi OS Accounts</p>
-          </div>
-        </div>
-
-        <div className="p-6 rounded-3xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-extrabold uppercase tracking-widest text-emerald-500">Active Subscriptions</span>
-            <div className="p-3 rounded-2xl bg-emerald-500/10 text-emerald-500">
-              <CheckCircle2 size={20} />
-            </div>
-          </div>
-          <div className="mt-4">
-            <h3 className="text-3xl font-black text-emerald-500">{stats.activeBusinesses || 0}</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 font-medium">Fully Operational Tenants</p>
-          </div>
-        </div>
-
-        <div className="p-6 rounded-3xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-extrabold uppercase tracking-widest text-amber-500">Suspended / Expired</span>
-            <div className="p-3 rounded-2xl bg-amber-500/10 text-amber-500">
-              <AlertTriangle size={20} />
-            </div>
-          </div>
-          <div className="mt-4">
-            <h3 className="text-3xl font-black text-amber-500">{(stats.suspendedBusinesses || 0) + (stats.expiredBusinesses || 0)}</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 font-medium">Require Renewals or Support</p>
-          </div>
-        </div>
-
-        <div className="p-6 rounded-3xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800 shadow-sm relative overflow-hidden group">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-extrabold uppercase tracking-widest text-cyan-500">Platform Active Users</span>
-            <div className="p-3 rounded-2xl bg-cyan-500/10 text-cyan-500">
-              <Users size={20} />
-            </div>
-          </div>
-          <div className="mt-4">
-            <h3 className="text-3xl font-black text-cyan-500">{stats.totalUsers || 0}</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 font-medium">Total Clerks, Admins & Staff</p>
-          </div>
-        </div>
-
-      </div>
-
-      {/* Main SaaS Businesses Table Section */}
-      <div className="bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800 rounded-3xl shadow-sm overflow-hidden">
-        
-        {/* Table Controls */}
-        <div className="p-6 border-b border-slate-200 dark:border-slate-800 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-          <div>
-            <h2 className="text-lg font-black text-slate-900 dark:text-white">Registered Tenant Businesses</h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400">View and manage all MandiOS businesses, domains, and subscription lifecycles.</p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3">
-            {/* Search Input */}
-            <div className="relative">
-              <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                type="text"
-                placeholder="Search business, email, tenant ID..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-10 pr-4 py-2 rounded-2xl bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 w-64"
-              />
-            </div>
-
-            {/* Status Filter */}
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="px-4 py-2 rounded-2xl bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+      {/* Super Admin Dashboard Navigation Tabs */}
+      <div className="flex items-center gap-1.5 overflow-x-auto pb-1 border-b border-slate-200 dark:border-slate-800 text-xs font-semibold scrollbar-none">
+        {[
+          { id: 'saas-dashboard', label: 'Dashboard', icon: Building2 },
+          { id: 'businesses', label: 'Businesses / Tenants', icon: Building2 },
+          { id: 'subscriptions', label: 'Subscriptions', icon: Layers },
+          { id: 'users', label: 'User Overview', icon: Users },
+          { id: 'search', label: 'Global Search', icon: Search },
+          { id: 'audit', label: 'Audit Logs', icon: FileText },
+          { id: 'settings', label: 'Platform Settings', icon: Settings },
+        ].map((t) => {
+          const Icon = t.icon;
+          const isActive = activeTab === t.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => handleTabChange(t.id)}
+              className={`px-4 py-2.5 rounded-xl whitespace-nowrap flex items-center gap-2 transition cursor-pointer ${
+                isActive
+                  ? 'bg-blue-600 text-white shadow-md'
+                  : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
             >
-              <option value="All">All Statuses</option>
-              <option value="Active">Active</option>
-              <option value="Suspended">Suspended</option>
-              <option value="Expired">Expired</option>
-            </select>
-          </div>
-        </div>
-
-        {/* Business List Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-slate-50 dark:bg-slate-900/50 border-b border-slate-200 dark:border-slate-800 text-[10px] font-black uppercase tracking-wider text-slate-400">
-                <th className="py-4 px-6">Business & Tenant</th>
-                <th className="py-4 px-6">Admin Contact</th>
-                <th className="py-4 px-6">Subscription Plan</th>
-                <th className="py-4 px-6">Status</th>
-                <th className="py-4 px-6">Expires On</th>
-                <th className="py-4 px-6 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 text-xs font-medium">
-              {loading ? (
-                <tr>
-                  <td colSpan="6" className="py-12 text-center text-slate-400">
-                    <div className="inline-flex items-center space-x-2">
-                      <RefreshCw size={18} className="animate-spin text-indigo-500" />
-                      <span>Loading SaaS tenants...</span>
-                    </div>
-                  </td>
-                </tr>
-              ) : filteredBusinesses.length === 0 ? (
-                <tr>
-                  <td colSpan="6" className="py-12 text-center text-slate-400">
-                    No businesses found matching query.
-                  </td>
-                </tr>
-              ) : (
-                filteredBusinesses.map((b) => (
-                  <tr key={b.id || b._id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
-                    
-                    {/* Business Name & Tenant ID */}
-                    <td className="py-4 px-6">
-                      <div className="flex items-center space-x-3">
-                        <div className="p-2.5 rounded-2xl bg-indigo-500/10 text-indigo-500 font-bold shrink-0">
-                          <Building2 size={18} />
-                        </div>
-                        <div>
-                          <p className="font-bold text-slate-900 dark:text-white text-sm">{b.name}</p>
-                          <p className="text-[10px] font-mono text-slate-400 mt-0.5">
-                            Tenant: <span className="text-indigo-400 font-semibold">{b.tenantId}</span>
-                          </p>
-                        </div>
-                      </div>
-                    </td>
-
-                    {/* Admin Contact */}
-                    <td className="py-4 px-6">
-                      <div className="space-y-0.5">
-                        <p className="font-semibold text-slate-800 dark:text-slate-200">{b.ownerName || 'Admin'}</p>
-                        <p className="text-[10px] text-slate-400 flex items-center space-x-1">
-                          <Mail size={11} />
-                          <span>{b.email}</span>
-                        </p>
-                      </div>
-                    </td>
-
-                    {/* Plan */}
-                    <td className="py-4 px-6">
-                      <span className={`inline-flex items-center px-2.5 py-1 rounded-xl text-[10px] font-black uppercase tracking-wider ${
-                        b.plan === 'Enterprise' ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20' :
-                        b.plan === 'Pro' ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20' :
-                        'bg-slate-500/10 text-slate-400 border border-slate-500/20'
-                      }`}>
-                        {b.plan || 'Standard'}
-                      </span>
-                    </td>
-
-                    {/* Status */}
-                    <td className="py-4 px-6">
-                      <span className={`inline-flex items-center space-x-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${
-                        b.status === 'Active' ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' :
-                        b.status === 'Suspended' ? 'bg-rose-500/10 text-rose-500 border border-rose-500/20' :
-                        'bg-amber-500/10 text-amber-500 border border-amber-500/20'
-                      }`}>
-                        <span className={`w-1.5 h-1.5 rounded-full ${b.status === 'Active' ? 'bg-emerald-500' : 'bg-rose-500'}`} />
-                        <span>{b.status}</span>
-                      </span>
-                    </td>
-
-                    {/* Expiration */}
-                    <td className="py-4 px-6 font-mono text-[11px] text-slate-400">
-                      {b.subscriptionExpiresAt ? new Date(b.subscriptionExpiresAt).toLocaleDateString() : 'Never'}
-                    </td>
-
-                    {/* Actions */}
-                    <td className="py-4 px-6 text-right">
-                      <div className="flex items-center justify-end space-x-2">
-                        
-                        {/* Status Toggle */}
-                        {b.status === 'Active' ? (
-                          <button
-                            onClick={() => handleToggleStatus(b, 'Suspended')}
-                            className="p-2 rounded-xl bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition-all cursor-pointer"
-                            title="Suspend Business Access"
-                          >
-                            <Ban size={15} />
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => handleToggleStatus(b, 'Active')}
-                            className="p-2 rounded-xl bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-all cursor-pointer"
-                            title="Activate Business Access"
-                          >
-                            <PlayCircle size={15} />
-                          </button>
-                        )}
-
-                        {/* Reset Password */}
-                        <button
-                          onClick={() => {
-                            setSelectedBusiness(b);
-                            setShowPasswordModal(true);
-                          }}
-                          className="p-2 rounded-xl bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-all cursor-pointer"
-                          title="Reset Admin Password"
-                        >
-                          <KeyRound size={15} />
-                        </button>
-
-                        {/* Edit Business */}
-                        <button
-                          onClick={() => {
-                            setSelectedBusiness(b);
-                            setEditForm({
-                              name: b.name || '',
-                              ownerName: b.ownerName || '',
-                              email: b.email || '',
-                              phone: b.phone || '',
-                              plan: b.plan || 'Pro',
-                              status: b.status || 'Active',
-                              subscriptionExpiresAt: b.subscriptionExpiresAt ? new Date(b.subscriptionExpiresAt).toISOString().split('T')[0] : ''
-                            });
-                            setShowEditModal(true);
-                          }}
-                          className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500/20 transition-all cursor-pointer"
-                          title="Edit Business Configuration"
-                        >
-                          <Edit3 size={15} />
-                        </button>
-                      </div>
-                    </td>
-
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+              <Icon className="w-4 h-4" />
+              <span>{t.label}</span>
+            </button>
+          );
+        })}
       </div>
 
-      {/* CREATE BUSINESS MODAL */}
-      {showCreateModal && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 z-50 overflow-y-auto">
-          <div className="w-full max-w-xl rounded-3xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800 p-7 space-y-6 shadow-2xl relative text-xs">
-            
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-4">
-              <div className="flex items-center space-x-3">
-                <div className="p-2.5 rounded-2xl bg-emerald-500/10 text-emerald-500">
-                  <Building2 size={20} />
-                </div>
-                <div>
-                  <h3 className="text-sm font-black uppercase tracking-wider text-slate-900 dark:text-white">Register New Mandi Business</h3>
-                  <p className="text-[10px] text-slate-400">Creates an isolated tenant account with dedicated MandiOS database namespace.</p>
-                </div>
-              </div>
-              <button onClick={() => setShowCreateModal(false)} className="text-slate-400 hover:text-white p-2">
-                <XCircle size={20} />
+      {/* TAB CONTENT ROUTING */}
+      {activeTab === 'saas-dashboard' && (
+        <SuperAdminOverview
+          stats={stats}
+          onNavigateTab={(tabName, filterValue) => {
+            if (tabName === 'businesses' && filterValue) {
+              setBizStatusFilter(filterValue);
+            }
+            handleTabChange(tabName);
+          }}
+          onOpenExtendModal={handleOpenExtendModal}
+          onSelectBusiness={handleOpenViewBusiness}
+        />
+      )}
+
+      {activeTab === 'businesses' && (
+        <BusinessManagement
+          businesses={businesses}
+          loading={loading}
+          searchQuery={bizSearchQuery}
+          setSearchQuery={setBizSearchQuery}
+          statusFilter={bizStatusFilter}
+          setStatusFilter={setBizStatusFilter}
+          planFilter={bizPlanFilter}
+          setPlanFilter={setBizPlanFilter}
+          onOpenCreateModal={handleOpenCreateBusiness}
+          onOpenEditModal={handleOpenEditBusiness}
+          onOpenViewModal={handleOpenViewBusiness}
+          onOpenExtendModal={handleOpenExtendModal}
+          onOpenResetPasswordModal={handleOpenResetPassModal}
+          onToggleStatus={handleToggleBusinessStatus}
+          onImpersonate={handleImpersonate}
+          onRefresh={fetchInitialData}
+        />
+      )}
+
+      {activeTab === 'subscriptions' && (
+        <SubscriptionManagement
+          plans={plans}
+          businesses={businesses}
+          onOpenCreatePlanModal={handleOpenCreatePlan}
+          onOpenEditPlanModal={handleOpenEditPlan}
+          onTogglePlanStatus={handleTogglePlanStatus}
+          onDeletePlan={handleDeletePlan}
+          onOpenExtendModal={handleOpenExtendModal}
+          onRefresh={fetchInitialData}
+        />
+      )}
+
+      {activeTab === 'users' && (
+        <UserOverview
+          users={allUsers}
+          loading={loading}
+          onToggleUserStatus={handleToggleUserStatus}
+          onViewUserDetails={handleViewUserDetails}
+          onRefresh={fetchInitialData}
+        />
+      )}
+
+      {activeTab === 'search' && (
+        <SuperAdminSearch
+          onSelectBusiness={(biz) => {
+            setBizSearchQuery(biz.name || biz.businessName || '');
+            handleTabChange('businesses');
+          }}
+          onSelectUser={(u) => {
+            handleTabChange('users');
+          }}
+        />
+      )}
+
+      {activeTab === 'audit' && (
+        <SuperAdminAuditLogs
+          logs={auditLogs}
+          loading={loading}
+          onRefresh={fetchInitialData}
+        />
+      )}
+
+      {activeTab === 'settings' && (
+        <PlatformSettings
+          onShowToast={showToast}
+        />
+      )}
+
+      {/* ======================================================== */}
+      {/* 1. REGISTER NEW BUSINESS MODAL                           */}
+      {/* ======================================================== */}
+      {createModalOpen && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-slate-800 w-full max-w-xl rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl p-6 my-8">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-700">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <Building2 className="w-5 h-5 text-blue-600" />
+                Register New Business (Tenant)
+              </h3>
+              <button
+                onClick={() => setCreateModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-white"
+              >
+                <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateBusiness} className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[10px] font-extrabold uppercase text-slate-400 mb-1">Business Name *</label>
+            <DialogAlert alert={modalAlert} onDismiss={() => setModalAlert(null)} />
+
+            <form onSubmit={handleCreateBusinessSubmit} className="mt-4 space-y-3.5 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="sm:col-span-2">
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Business Name *
+                  </label>
                   <input
                     type="text"
                     required
-                    placeholder="e.g. Bismillah Fruit Commission Shop"
-                    value={createForm.name}
-                    onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })}
-                    className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    placeholder="e.g. Bismillah Commission Shop"
+                    value={createFormData.name}
+                    onChange={(e) => {
+                      setCreateFormData({ ...createFormData, name: e.target.value });
+                      handleSuggestArthiCode(e.target.value);
+                    }}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
                   />
                 </div>
-
                 <div>
-                  <label className="block text-[10px] font-extrabold uppercase text-slate-400 mb-1">Custom Tenant ID (Optional)</label>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Arthi Code (2-5 Chars)
+                  </label>
                   <input
                     type="text"
-                    placeholder="e.g. tenant_bismillah_002"
-                    value={createForm.tenantId}
-                    onChange={(e) => setCreateForm({ ...createForm, tenantId: e.target.value })}
-                    className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white font-mono font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    maxLength={5}
+                    placeholder="e.g. BCS"
+                    value={createFormData.arthiCode}
+                    onChange={(e) => setCreateFormData({ ...createFormData, arthiCode: e.target.value.toUpperCase() })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl font-mono uppercase dark:text-white"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[10px] font-extrabold uppercase text-slate-400 mb-1">Admin Owner Name *</label>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Owner / Admin Full Name *
+                  </label>
                   <input
                     type="text"
                     required
-                    placeholder="e.g. Mian Rashid"
-                    value={createForm.ownerName}
-                    onChange={(e) => setCreateForm({ ...createForm, ownerName: e.target.value })}
-                    className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    placeholder="e.g. Haji Muhammad Raheel"
+                    value={createFormData.ownerName}
+                    onChange={(e) => setCreateFormData({ ...createFormData, ownerName: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
                   />
                 </div>
-
                 <div>
-                  <label className="block text-[10px] font-extrabold uppercase text-slate-400 mb-1">Admin Phone Number</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. 0300-1234567"
-                    value={createForm.phone}
-                    onChange={(e) => setCreateForm({ ...createForm, phone: e.target.value })}
-                    className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[10px] font-extrabold uppercase text-slate-400 mb-1">Admin Login Email *</label>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Owner Email (Login Username) *
+                  </label>
                   <input
                     type="email"
                     required
-                    placeholder="admin@bismillahmandi.com"
-                    value={createForm.email}
-                    onChange={(e) => setCreateForm({ ...createForm, email: e.target.value })}
-                    className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    placeholder="owner@mandi.pk"
+                    value={createFormData.email}
+                    onChange={(e) => setCreateFormData({ ...createFormData, email: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
                   />
                 </div>
+              </div>
 
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[10px] font-extrabold uppercase text-slate-400 mb-1">Initial Password *</label>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Password *
+                  </label>
                   <input
                     type="password"
                     required
                     placeholder="••••••••"
-                    value={createForm.password}
-                    onChange={(e) => setCreateForm({ ...createForm, password: e.target.value })}
-                    className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    value={createFormData.password}
+                    onChange={(e) => setCreateFormData({ ...createFormData, password: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Phone / WhatsApp
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="0300-1234567"
+                    value={createFormData.phone}
+                    onChange={(e) => setCreateFormData({ ...createFormData, phone: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[10px] font-extrabold uppercase text-slate-400 mb-1">SaaS Plan Tier</label>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    City / Mandi Location
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Lahore Vegetable Market"
+                    value={createFormData.city}
+                    onChange={(e) => setCreateFormData({ ...createFormData, city: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Address / Shop #
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Shop #12, Block C"
+                    value={createFormData.address}
+                    onChange={(e) => setCreateFormData({ ...createFormData, address: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-100 dark:border-slate-700">
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Initial Subscription Plan
+                  </label>
                   <select
-                    value={createForm.plan}
-                    onChange={(e) => setCreateForm({ ...createForm, plan: e.target.value })}
-                    className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    value={createFormData.plan}
+                    onChange={(e) => setCreateFormData({ ...createFormData, plan: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
                   >
-                    <option value="Basic">Basic Plan</option>
-                    <option value="Pro">Pro Plan</option>
-                    <option value="Enterprise">Enterprise Tier</option>
+                    <option value="Trial">Trial (30 Days)</option>
+                    <option value="Basic">Basic</option>
+                    <option value="Pro">Pro</option>
+                    <option value="Enterprise">Enterprise</option>
                   </select>
                 </div>
-
                 <div>
-                  <label className="block text-[10px] font-extrabold uppercase text-slate-400 mb-1">Subscription Expiry Date</label>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Subscription Expiry Date
+                  </label>
                   <input
                     type="date"
-                    value={createForm.subscriptionExpiresAt}
-                    onChange={(e) => setCreateForm({ ...createForm, subscriptionExpiresAt: e.target.value })}
-                    className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    value={createFormData.subscriptionExpiresAt}
+                    onChange={(e) => setCreateFormData({ ...createFormData, subscriptionExpiresAt: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
                   />
                 </div>
               </div>
 
-              <div className="flex items-center justify-end space-x-3 border-t border-slate-100 dark:border-slate-800 pt-4">
+              <div className="pt-4 flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setShowCreateModal(false)}
-                  className="px-5 py-2.5 rounded-2xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold hover:bg-slate-200 transition-all cursor-pointer"
+                  onClick={() => setCreateModalOpen(false)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={actionLoading}
-                  className="px-6 py-2.5 rounded-2xl bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-black uppercase tracking-wider shadow-lg shadow-emerald-500/20 transition-all cursor-pointer flex items-center space-x-2"
+                  className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow transition"
                 >
-                  {actionLoading ? (
-                    <>
-                      <SpokeSpinner size={16} color="#FFFFFF" />
-                      <span>Registering...</span>
-                    </>
-                  ) : (
-                    <span>Register Business</span>
-                  )}
+                  Register Business
                 </button>
               </div>
             </form>
-
           </div>
         </div>
       )}
 
-      {/* EDIT BUSINESS MODAL */}
-      {showEditModal && selectedBusiness && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 z-50 overflow-y-auto">
-          <div className="w-full max-w-xl rounded-3xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800 p-7 space-y-6 shadow-2xl relative text-xs">
-            
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-4">
-              <div className="flex items-center space-x-3">
-                <div className="p-2.5 rounded-2xl bg-indigo-500/10 text-indigo-500">
-                  <Edit3 size={20} />
-                </div>
-                <div>
-                  <h3 className="text-sm font-black uppercase tracking-wider text-slate-900 dark:text-white">Edit Business Settings</h3>
-                  <p className="text-[10px] text-slate-400">Updating configuration for tenant: {selectedBusiness.tenantId}</p>
-                </div>
-              </div>
-              <button onClick={() => setShowEditModal(false)} className="text-slate-400 hover:text-white p-2">
-                <XCircle size={20} />
+      {/* ======================================================== */}
+      {/* 2. EDIT BUSINESS INFORMATION MODAL                       */}
+      {/* ======================================================== */}
+      {editModalOpen && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-slate-800 w-full max-w-xl rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl p-6 my-8">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-700">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <Edit2 className="w-5 h-5 text-indigo-600" />
+                Edit Business Information
+              </h3>
+              <button onClick={() => setEditModalOpen(false)} className="p-1 text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleEditBusiness} className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[10px] font-extrabold uppercase text-slate-400 mb-1">Business Name</label>
+            <DialogAlert alert={modalAlert} onDismiss={() => setModalAlert(null)} />
+
+            <form onSubmit={handleEditBusinessSubmit} className="mt-4 space-y-3.5 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="sm:col-span-2">
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Business Name
+                  </label>
                   <input
                     type="text"
                     required
-                    value={editForm.name}
-                    onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                    className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    value={editFormData.name}
+                    onChange={(e) => setEditFormData({ ...editFormData, name: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
                   />
                 </div>
-
                 <div>
-                  <label className="block text-[10px] font-extrabold uppercase text-slate-400 mb-1">Owner Name</label>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Registration Code
+                  </label>
                   <input
                     type="text"
-                    value={editForm.ownerName}
-                    onChange={(e) => setEditForm({ ...editForm, ownerName: e.target.value })}
-                    className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    value={editFormData.businessCode}
+                    onChange={(e) => setEditFormData({ ...editFormData, businessCode: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl font-mono dark:text-white"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[10px] font-extrabold uppercase text-slate-400 mb-1">SaaS Plan Tier</label>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Owner Name
+                  </label>
+                  <input
+                    type="text"
+                    value={editFormData.ownerName}
+                    onChange={(e) => setEditFormData({ ...editFormData, ownerName: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Email Address
+                  </label>
+                  <input
+                    type="email"
+                    value={editFormData.email}
+                    onChange={(e) => setEditFormData({ ...editFormData, email: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Phone / Mobile
+                  </label>
+                  <input
+                    type="text"
+                    value={editFormData.phone}
+                    onChange={(e) => setEditFormData({ ...editFormData, phone: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    City
+                  </label>
+                  <input
+                    type="text"
+                    value={editFormData.city}
+                    onChange={(e) => setEditFormData({ ...editFormData, city: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-slate-100 dark:border-slate-700">
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Subscription Plan
+                  </label>
                   <select
-                    value={editForm.plan}
-                    onChange={(e) => setEditForm({ ...editForm, plan: e.target.value })}
-                    className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    value={editFormData.plan}
+                    onChange={(e) => setEditFormData({ ...editFormData, plan: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
                   >
-                    <option value="Basic">Basic Plan</option>
-                    <option value="Pro">Pro Plan</option>
-                    <option value="Enterprise">Enterprise Tier</option>
+                    <option value="Trial">Trial</option>
+                    <option value="Basic">Basic</option>
+                    <option value="Pro">Pro</option>
+                    <option value="Enterprise">Enterprise</option>
                   </select>
                 </div>
-
                 <div>
-                  <label className="block text-[10px] font-extrabold uppercase text-slate-400 mb-1">Account Status</label>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Current Status
+                  </label>
                   <select
-                    value={editForm.status}
-                    onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}
-                    className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    value={editFormData.status}
+                    onChange={(e) => setEditFormData({ ...editFormData, status: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
                   >
                     <option value="Active">Active</option>
                     <option value="Suspended">Suspended</option>
                     <option value="Expired">Expired</option>
                   </select>
                 </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Expiry Date
+                  </label>
+                  <input
+                    type="date"
+                    value={editFormData.subscriptionExpiresAt}
+                    onChange={(e) => setEditFormData({ ...editFormData, subscriptionExpiresAt: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
+                  />
+                </div>
               </div>
 
-              <div className="flex items-center justify-end space-x-3 border-t border-slate-100 dark:border-slate-800 pt-4">
+              <div className="pt-4 flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setShowEditModal(false)}
-                  className="px-5 py-2.5 rounded-2xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold transition-all cursor-pointer"
+                  onClick={() => setEditModalOpen(false)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={actionLoading}
-                  className="px-6 py-2.5 rounded-2xl bg-indigo-500 hover:bg-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-black uppercase tracking-wider shadow-lg shadow-indigo-500/20 transition-all cursor-pointer flex items-center space-x-2"
+                  className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow transition"
                 >
-                  {actionLoading ? (
-                    <>
-                      <SpokeSpinner size={16} color="#FFFFFF" />
-                      <span>Saving...</span>
-                    </>
-                  ) : (
-                    <span>Save Changes</span>
-                  )}
+                  Save Changes
                 </button>
               </div>
             </form>
-
           </div>
         </div>
       )}
 
-      {/* RESET PASSWORD MODAL */}
-      {showPasswordModal && selectedBusiness && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 z-50">
-          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800 p-7 space-y-6 shadow-2xl relative text-xs">
-            
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-4">
-              <div className="flex items-center space-x-3">
-                <div className="p-2.5 rounded-2xl bg-amber-500/10 text-amber-500">
-                  <KeyRound size={20} />
-                </div>
-                <div>
-                  <h3 className="text-sm font-black uppercase tracking-wider text-slate-900 dark:text-white">Reset Admin Password</h3>
-                  <p className="text-[10px] text-slate-400">For: {selectedBusiness.name} ({selectedBusiness.email})</p>
-                </div>
+      {/* ======================================================== */}
+      {/* 3. VIEW BUSINESS DETAILS MODAL                           */}
+      {/* ======================================================== */}
+      {viewModalOpen && selectedBusiness && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-slate-800 w-full max-w-2xl rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl p-6 my-8">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-700">
+              <div>
+                <h3 className="text-lg font-bold text-slate-900 dark:text-white">
+                  {selectedBusiness.name || selectedBusiness.businessName}
+                </h3>
+                <p className="text-xs text-slate-500 font-mono">Tenant ID: {selectedBusiness.tenantId}</p>
               </div>
-              <button onClick={() => setShowPasswordModal(false)} className="text-slate-400 hover:text-white p-2">
-                <XCircle size={20} />
+              <button onClick={() => setViewModalOpen(false)} className="p-1 text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleResetPassword} className="space-y-4">
+            <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-4 text-xs">
+              <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-slate-400 block mb-0.5">Registration Number</span>
+                <strong className="text-slate-900 dark:text-white font-mono text-sm">
+                  {selectedBusiness.businessCode || 'BUS-1001'}
+                </strong>
+              </div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-slate-400 block mb-0.5">Arthi Code</span>
+                <strong className="text-slate-900 dark:text-white font-mono text-sm">
+                  {selectedBusiness.arthiCode || 'N/A'}
+                </strong>
+              </div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-slate-400 block mb-0.5">Current Status</span>
+                <span className={`inline-block font-bold ${
+                  selectedBusiness.status === 'Active' ? 'text-emerald-600' : 'text-red-600'
+                }`}>
+                  {selectedBusiness.status}
+                </span>
+              </div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-slate-400 block mb-0.5">Owner Name</span>
+                <strong className="text-slate-900 dark:text-white">{selectedBusiness.ownerName}</strong>
+              </div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-slate-400 block mb-0.5">Contact Email</span>
+                <strong className="text-slate-900 dark:text-white">{selectedBusiness.email}</strong>
+              </div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-slate-400 block mb-0.5">Phone Number</span>
+                <strong className="text-slate-900 dark:text-white">{selectedBusiness.phone || 'N/A'}</strong>
+              </div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-slate-400 block mb-0.5">Location</span>
+                <strong className="text-slate-900 dark:text-white">{selectedBusiness.city || selectedBusiness.address || 'Pakistan'}</strong>
+              </div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-slate-400 block mb-0.5">Subscription Plan</span>
+                <strong className="text-indigo-600 font-bold">{selectedBusiness.plan || selectedBusiness.subscriptionPlan}</strong>
+              </div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-slate-400 block mb-0.5">Expiry Date</span>
+                <strong className="text-slate-900 dark:text-white">{selectedBusiness.subscriptionExpiresAt || selectedBusiness.subscriptionExpiryDate}</strong>
+              </div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-slate-400 block mb-0.5">Registered Date</span>
+                <strong className="text-slate-900 dark:text-white">{selectedBusiness.registrationDate || selectedBusiness.createdAt || 'N/A'}</strong>
+              </div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-slate-400 block mb-0.5">Total Users</span>
+                <strong className="text-slate-900 dark:text-white">{selectedBusiness.totalUsers ?? 1}</strong>
+              </div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-slate-400 block mb-0.5">Last Activity</span>
+                <strong className="text-slate-900 dark:text-white">{selectedBusiness.lastActivity || 'N/A'}</strong>
+              </div>
+            </div>
+
+            <div className="mt-6 pt-4 border-t border-slate-100 dark:border-slate-700 flex items-center justify-between">
+              <button
+                onClick={() => {
+                  setViewModalOpen(false);
+                  handleImpersonate(selectedBusiness);
+                }}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5"
+              >
+                <LogIn className="w-4 h-4" />
+                Support Impersonation Login
+              </button>
+              <button
+                onClick={() => setViewModalOpen(false)}
+                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-600 dark:text-slate-300"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* 4. EXTEND SUBSCRIPTION / CHANGE PLAN MODAL               */}
+      {/* ======================================================== */}
+      {extendModalOpen && selectedBusiness && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-slate-800 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl p-6">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-700">
               <div>
-                <label className="block text-[10px] font-extrabold uppercase text-slate-400 mb-1">New Password *</label>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <Clock className="w-5 h-5 text-amber-500" />
+                  Extend Subscription
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">{selectedBusiness.name}</p>
+              </div>
+              <button onClick={() => setExtendModalOpen(false)} className="p-1 text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleExtendSubscriptionSubmit} className="mt-4 space-y-4 text-xs">
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Subscription Plan
+                </label>
+                <select
+                  value={extendFormData.subscriptionPlan}
+                  onChange={(e) => setExtendFormData({ ...extendFormData, subscriptionPlan: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
+                >
+                  <option value="Trial">Trial</option>
+                  <option value="Basic">Basic</option>
+                  <option value="Pro">Pro</option>
+                  <option value="Enterprise">Enterprise</option>
+                </select>
+              </div>
+
+              {/* Quick Duration Buttons */}
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                  Quick Extension Presets
+                </label>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {[
+                    { label: '+7 Days', days: 7 },
+                    { label: '+15 Days', days: 15 },
+                    { label: '+30 Days', days: 30 },
+                    { label: '+1 Year', days: 365 },
+                  ].map(p => (
+                    <button
+                      key={p.days}
+                      type="button"
+                      onClick={() => {
+                        const base = new Date();
+                        base.setDate(base.getDate() + p.days);
+                        setExtendFormData({
+                          ...extendFormData,
+                          extendDays: p.days,
+                          subscriptionExpiryDate: base.toISOString().split('T')[0]
+                        });
+                      }}
+                      className="px-2.5 py-1.5 bg-slate-100 dark:bg-slate-700 hover:bg-amber-500 hover:text-white rounded-lg font-semibold transition"
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  New Expiry Date
+                </label>
                 <input
-                  type="password"
+                  type="date"
                   required
-                  placeholder="Enter new password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white font-semibold focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  value={extendFormData.subscriptionExpiryDate}
+                  onChange={(e) => setExtendFormData({ ...extendFormData, subscriptionExpiryDate: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
                 />
               </div>
 
-              <div className="flex items-center justify-end space-x-3 border-t border-slate-100 dark:border-slate-800 pt-4">
+              <div className="pt-3 flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setShowPasswordModal(false)}
-                  className="px-5 py-2.5 rounded-2xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold transition-all cursor-pointer"
+                  onClick={() => setExtendModalOpen(false)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={actionLoading}
-                  className="px-6 py-2.5 rounded-2xl bg-amber-500 hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-black uppercase tracking-wider shadow-lg shadow-amber-500/20 transition-all cursor-pointer flex items-center space-x-2"
+                  className="px-5 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl shadow transition"
                 >
-                  {actionLoading ? (
-                    <>
-                      <SpokeSpinner size={16} color="#FFFFFF" />
-                      <span>Updating...</span>
-                    </>
-                  ) : (
-                    <span>Update Password</span>
-                  )}
+                  Confirm & Renew
                 </button>
               </div>
             </form>
-
           </div>
         </div>
       )}
 
+      {/* ======================================================== */}
+      {/* 5. RESET OWNER PASSWORD MODAL                            */}
+      {/* ======================================================== */}
+      {resetPassModalOpen && selectedBusiness && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-800 w-full max-w-sm rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl p-6">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-700">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <Key className="w-5 h-5 text-purple-600" />
+                Reset Owner Password
+              </h3>
+              <button onClick={() => setResetPassModalOpen(false)} className="p-1 text-slate-400">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleResetPassSubmit} className="mt-4 space-y-4 text-xs">
+              <p className="text-slate-500">
+                Reset password for owner <strong>{selectedBusiness.email}</strong>.
+              </p>
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  New Password (Min 6 chars)
+                </label>
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  placeholder="••••••••"
+                  value={resetPassData.newPassword}
+                  onChange={(e) => setResetPassData({ newPassword: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
+                />
+              </div>
+
+              <div className="pt-2 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setResetPassModalOpen(false)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl shadow transition"
+                >
+                  Update Password
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* 6. CREATE / EDIT PLAN MODAL                              */}
+      {/* ======================================================== */}
+      {planModalOpen && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-slate-800 w-full max-w-lg rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl p-6 my-8">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-700">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <Layers className="w-5 h-5 text-indigo-600" />
+                {selectedPlan ? 'Edit Subscription Plan' : 'Create Subscription Plan'}
+              </h3>
+              <button onClick={() => setPlanModalOpen(false)} className="p-1 text-slate-400">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handlePlanFormSubmit} className="mt-4 space-y-3.5 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Plan Name *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Pro"
+                    value={planFormData.name}
+                    onChange={(e) => setPlanFormData({ ...planFormData, name: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Duration Preset
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="1 Month / 1 Year"
+                    value={planFormData.duration}
+                    onChange={(e) => setPlanFormData({ ...planFormData, duration: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Monthly Price (PKR)
+                  </label>
+                  <input
+                    type="number"
+                    value={planFormData.priceMonthly}
+                    onChange={(e) => setPlanFormData({ ...planFormData, priceMonthly: Number(e.target.value) })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Annual Price (PKR)
+                  </label>
+                  <input
+                    type="number"
+                    value={planFormData.priceAnnual}
+                    onChange={(e) => setPlanFormData({ ...planFormData, priceAnnual: Number(e.target.value) })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Max Users
+                  </label>
+                  <input
+                    type="number"
+                    value={planFormData.maxUsers}
+                    onChange={(e) => setPlanFormData({ ...planFormData, maxUsers: Number(e.target.value) })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Max Products Catalog
+                  </label>
+                  <input
+                    type="number"
+                    value={planFormData.maxProducts}
+                    onChange={(e) => setPlanFormData({ ...planFormData, maxProducts: Number(e.target.value) })}
+                    className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Description
+                </label>
+                <textarea
+                  rows={2}
+                  value={planFormData.description}
+                  onChange={(e) => setPlanFormData({ ...planFormData, description: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl dark:text-white"
+                />
+              </div>
+
+              <div className="pt-2 border-t border-slate-100 dark:border-slate-700 space-y-2">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={planFormData.features?.logistics}
+                    onChange={(e) => setPlanFormData({
+                      ...planFormData,
+                      features: { ...planFormData.features, logistics: e.target.checked }
+                    })}
+                  />
+                  <span>Enable Logistics & Truck Module</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={planFormData.features?.returnsModule}
+                    onChange={(e) => setPlanFormData({
+                      ...planFormData,
+                      features: { ...planFormData.features, returnsModule: e.target.checked }
+                    })}
+                  />
+                  <span>Enable Returns & Crates Management</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={planFormData.features?.prioritySupport}
+                    onChange={(e) => setPlanFormData({
+                      ...planFormData,
+                      features: { ...planFormData.features, prioritySupport: e.target.checked }
+                    })}
+                  />
+                  <span>24/7 Dedicated Priority Phone Support</span>
+                </label>
+              </div>
+
+              <div className="pt-4 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPlanModalOpen(false)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow transition"
+                >
+                  {selectedPlan ? 'Save Changes' : 'Create Plan'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* 7. VIEW USER DETAILS MODAL                               */}
+      {/* ======================================================== */}
+      {viewUserModalOpen && selectedUser && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-800 w-full max-w-md rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl p-6">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-700">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <Users className="w-5 h-5 text-cyan-600" />
+                User Account Overview
+              </h3>
+              <button onClick={() => setViewUserModalOpen(false)} className="p-1 text-slate-400">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-2.5 text-xs">
+              <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-slate-400 block mb-0.5">User Full Name</span>
+                <strong className="text-slate-900 dark:text-white text-sm">{selectedUser.name}</strong>
+              </div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-slate-400 block mb-0.5">Email (Login ID)</span>
+                <strong className="text-slate-900 dark:text-white">{selectedUser.email}</strong>
+              </div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-slate-400 block mb-0.5">Role</span>
+                <strong className="text-cyan-600 font-bold">{selectedUser.role}</strong>
+              </div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-slate-400 block mb-0.5">Associated Business</span>
+                <strong className="text-slate-900 dark:text-white">{selectedUser.businessName}</strong>
+                <span className="block text-[10px] text-slate-400 font-mono mt-0.5">Tenant: {selectedUser.tenantId}</span>
+              </div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-slate-400 block mb-0.5">Account Status</span>
+                <strong className={selectedUser.status === 'Active' ? 'text-emerald-600' : 'text-red-600'}>
+                  {selectedUser.status}
+                </strong>
+              </div>
+              <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                <span className="text-slate-400 block mb-0.5">Last Login / Activity</span>
+                <strong className="text-slate-900 dark:text-white">{selectedUser.lastLogin || 'N/A'}</strong>
+              </div>
+            </div>
+
+            <div className="mt-5 pt-3 border-t border-slate-100 dark:border-slate-700 flex justify-end">
+              <button
+                onClick={() => setViewUserModalOpen(false)}
+                className="px-4 py-2 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 text-xs font-semibold rounded-xl"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

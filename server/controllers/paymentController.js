@@ -1,5 +1,5 @@
 import { Payment, Supplier, Customer, Ledger, AuditLog } from '../models/index.js';
-import { buildTenantQuery, getTenantId } from '../utils/tenant.js';
+import { assertTenantOwnership, buildTenantQuery, getTenantId } from '../utils/tenant.js';
 
 export async function getPayments(req, res) {
   try {
@@ -29,6 +29,7 @@ export async function addPayment(req, res) {
       if (!supplier) {
         return res.status(404).json({ error: 'Supplier not found.' });
       }
+      if (!assertTenantOwnership(req, supplier)) return res.status(404).json({ error: 'Supplier not found.' });
       partyName = supplier.name;
 
       // When we pay a supplier, our debt reduces. Supplier's balance increases (goes up/gets less negative).
@@ -68,6 +69,7 @@ export async function addPayment(req, res) {
       if (!customer) {
         return res.status(404).json({ error: 'Customer not found.' });
       }
+      if (!assertTenantOwnership(req, customer)) return res.status(404).json({ error: 'Customer not found.' });
       partyName = customer.name;
 
       // When they pay us, their debt reduces. Balance goes down (gets closer to zero or negative).
@@ -129,6 +131,7 @@ export async function deletePayment(req, res) {
     if (!payment) {
       return res.status(404).json({ error: 'Payment not found.' });
     }
+    if (!assertTenantOwnership(req, payment)) return res.status(404).json({ error: 'Payment not found.' });
 
     const tenantId = getTenantId(req) || payment.tenantId || 'tenant_default_001';
     const { partyId, partyType, amount, partyName } = payment;
@@ -136,6 +139,7 @@ export async function deletePayment(req, res) {
     if (partyType === 'Supplier') {
       const supplier = await Supplier.findById(partyId);
       if (supplier) {
+        if (!assertTenantOwnership(req, supplier)) return res.status(404).json({ error: 'Payment not found.' });
         // Reverse payment: we paid them, so now our debt goes back up (gets more negative)
         const reversedBalance = supplier.currentBalance - amount;
         await Supplier.findByIdAndUpdate(partyId, {
@@ -158,6 +162,7 @@ export async function deletePayment(req, res) {
     } else if (partyType === 'Customer') {
       const customer = await Customer.findById(partyId);
       if (customer) {
+        if (!assertTenantOwnership(req, customer)) return res.status(404).json({ error: 'Payment not found.' });
         // Reverse payment: they paid us, so now their debt goes back up (gets more positive)
         const reversedBalance = customer.currentBalance + amount;
         await Customer.findByIdAndUpdate(partyId, {

@@ -3,6 +3,7 @@ import api from '../../utils/api';
 import { useLanguage } from '../../context/LanguageContext';
 import { exportToCSV } from '../../utils/navigation';
 import { Printer, Download, Filter, Search, DollarSign, RefreshCw, ShoppingBag } from 'lucide-react';
+import PrintReportHeader from '../common/PrintReportHeader.jsx';
 
 export default function ConsignmentReportPage() {
   const { t } = useLanguage();
@@ -133,15 +134,21 @@ export default function ConsignmentReportPage() {
       </div>
 
       {/* Printable Header */}
-      <div className="hidden print:block text-slate-900 border-b-2 border-slate-300 pb-4 mb-6">
-        <div className="flex justify-between items-start">
-          <div>
-            <h1 className="text-2xl font-black uppercase tracking-wider">LAHORE SABZI & FRUIT MANDI BROKERAGE</h1>
-            <p className="text-sm font-bold text-indigo-700">Consignment Sales & Brokerage Turnover Summary</p>
-            <p className="text-xs text-slate-500 mt-1">Report Generated: {new Date().toLocaleString()}</p>
-          </div>
-        </div>
-      </div>
+      <PrintReportHeader
+        title="CONSIGNMENT SALES & BROKERAGE TURNOVER REPORT"
+        period={`${startDate || 'All-Time'} to ${endDate || 'Present'}`}
+        filters={[
+          ...(supplierFilter ? [{ label: 'Supplier', value: suppliers.find(s => s._id === supplierFilter)?.name || supplierFilter }] : []),
+          ...(customerFilter ? [{ label: 'Customer', value: customers.find(c => c._id === customerFilter)?.name || customerFilter }] : []),
+          ...(lotFilter ? [{ label: 'Lot #', value: lotFilter }] : [])
+        ]}
+        summaryMetrics={[
+          { label: 'Billed Vouchers', value: `${filteredSales.length} Invoices` },
+          { label: 'Quantity Billed', value: `${totalUnits.toLocaleString()} Units` },
+          { label: 'Gross Billed Amount', value: `Rs. ${totalRevenue.toLocaleString()}` },
+          { label: 'Brokerage Commission', value: `Rs. ${totalCommission.toLocaleString()}` }
+        ]}
+      />
 
       {/* Summary Metrics */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 print:hidden">
@@ -309,6 +316,17 @@ export default function ConsignmentReportPage() {
                 ))
               )}
             </tbody>
+            {filteredSales.length > 0 && (
+              <tfoot>
+                <tr className="bg-slate-100 dark:bg-slate-800/90 font-bold border-t-2 border-slate-300 dark:border-slate-700 text-[11px] text-slate-900 dark:text-white">
+                  <td colSpan="6" className="py-3 px-4 font-black">TOTALS ({filteredSales.length} Invoices)</td>
+                  <td className="py-3 px-4 text-right font-black">{totalUnits.toLocaleString()}</td>
+                  <td className="py-3 px-4 text-right">-</td>
+                  <td className="py-3 px-4 text-right font-black text-slate-900 dark:text-white">Rs. {totalRevenue.toLocaleString()}</td>
+                  <td className="py-3 px-4 text-right font-black text-indigo-600 dark:text-indigo-400">Rs. {totalCommission.toLocaleString()}</td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       </div>

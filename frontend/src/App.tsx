@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './context/AuthContext.jsx';
 import { LanguageProvider } from './context/LanguageContext.jsx';
 import { ThemeProvider } from './context/ThemeContext.jsx';
 import { ConfirmProvider } from './context/ConfirmContext.jsx';
+import NetworkStatusBanner from './components/common/NetworkStatusBanner.jsx';
 import Login from './components/Login.jsx';
 import Layout from './components/Layout.jsx';
 import AdminDashboard from './components/AdminDashboard.jsx';
@@ -96,16 +97,16 @@ function DashboardTabWrapper() {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const currentTab = PATH_TO_TAB[location.pathname] || 'dashboard';
+  const currentTab = PATH_TO_TAB[location.pathname] || (user?.role === 'super_admin' ? 'saas-dashboard' : 'dashboard');
 
   const handleTabChange = (newTab) => {
-    const path = TAB_TO_PATH[newTab] || '/dashboard';
+    const path = TAB_TO_PATH[newTab] || (user?.role === 'super_admin' ? '/saas-dashboard' : '/dashboard');
     navigate(path);
   };
 
   return (
     <Layout currentTab={currentTab} setCurrentTab={handleTabChange}>
-      {user.role === 'super_admin' && <SuperAdminDashboard tab={currentTab} />}
+      {user.role === 'super_admin' && <SuperAdminDashboard tab={currentTab} onTabChange={handleTabChange} />}
       {user.role === 'Admin' && <AdminDashboard tab={currentTab} setCurrentTab={handleTabChange} />}
       {user.role === 'Clerk' && <ClerkDashboard tab={currentTab} setCurrentTab={handleTabChange} />}
       {user.role === 'Customer' && <CustomerDashboard tab={currentTab} setCurrentTab={handleTabChange} />}
@@ -211,6 +212,17 @@ function MainApp() {
       <Route path="/home" element={<ProtectedRoute><DashboardTabWrapper /></ProtectedRoute>} />
       <Route path="/dashboard" element={<ProtectedRoute><DashboardTabWrapper /></ProtectedRoute>} />
       <Route path="/saas-dashboard" element={<ProtectedRoute><DashboardTabWrapper /></ProtectedRoute>} />
+      <Route path="/super-admin" element={<ProtectedRoute><DashboardTabWrapper /></ProtectedRoute>} />
+      <Route path="/businesses" element={<ProtectedRoute><DashboardTabWrapper /></ProtectedRoute>} />
+      <Route path="/subscriptions" element={<ProtectedRoute><DashboardTabWrapper /></ProtectedRoute>} />
+      <Route path="/users" element={<ProtectedRoute><DashboardTabWrapper /></ProtectedRoute>} />
+      <Route path="/search" element={<ProtectedRoute><DashboardTabWrapper /></ProtectedRoute>} />
+      <Route path="/super-admin/businesses" element={<ProtectedRoute><DashboardTabWrapper /></ProtectedRoute>} />
+      <Route path="/super-admin/subscriptions" element={<ProtectedRoute><DashboardTabWrapper /></ProtectedRoute>} />
+      <Route path="/super-admin/users" element={<ProtectedRoute><DashboardTabWrapper /></ProtectedRoute>} />
+      <Route path="/super-admin/search" element={<ProtectedRoute><DashboardTabWrapper /></ProtectedRoute>} />
+      <Route path="/super-admin/audit" element={<ProtectedRoute><DashboardTabWrapper /></ProtectedRoute>} />
+      <Route path="/super-admin/settings" element={<ProtectedRoute><DashboardTabWrapper /></ProtectedRoute>} />
       <Route path="/logistics" element={<ProtectedRoute><DashboardTabWrapper /></ProtectedRoute>} />
       <Route path="/business-profile" element={<ProtectedRoute><DashboardTabWrapper /></ProtectedRoute>} />
       <Route path="/clerks" element={<ProtectedRoute><DashboardTabWrapper /></ProtectedRoute>} />
@@ -268,6 +280,7 @@ export default function App() {
         <LanguageProvider>
           <AuthProvider>
             <ConfirmProvider>
+              <NetworkStatusBanner />
               <MainApp />
             </ConfirmProvider>
           </AuthProvider>

@@ -1,6 +1,10 @@
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'mandi-secret-key-123!';
+const JWT_SECRET = process.env.JWT_SECRET;
+
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET is required to authenticate requests.');
+}
 
 export function authenticateJWT(req, res, next) {
   const authHeader = req.headers.authorization;

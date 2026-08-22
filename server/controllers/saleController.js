@@ -1,6 +1,6 @@
 import { Sale, Product, Customer, Supplier, Ledger, AuditLog, StockEntry } from '../models/index.js';
 import { calculateCommission, getCommissionCalculationDetails } from '../utils/commissionService.js';
-import { buildTenantQuery, getTenantId } from '../utils/tenant.js';
+import { assertTenantOwnership, buildTenantQuery, getTenantId } from '../utils/tenant.js';
 
 export async function getSales(req, res) {
   try {
@@ -33,16 +33,19 @@ export async function addSale(req, res) {
     if (!stockEntry) {
       return res.status(404).json({ error: 'Supplier consignment/arrival not found.' });
     }
+    if (!assertTenantOwnership(req, stockEntry)) return res.status(404).json({ error: 'Supplier consignment/arrival not found.' });
 
     const product = await Product.findById(stockEntry.productId);
     if (!product) {
       return res.status(404).json({ error: 'Product not found.' });
     }
+    if (!assertTenantOwnership(req, product)) return res.status(404).json({ error: 'Product not found.' });
 
     const supplier = await Supplier.findById(stockEntry.supplierId);
     if (!supplier) {
       return res.status(404).json({ error: 'Supplier of this consignment not found.' });
     }
+    if (!assertTenantOwnership(req, supplier)) return res.status(404).json({ error: 'Supplier of this consignment not found.' });
 
     // Calculate total quantity requested in this sale batch
     let totalQtyRequested = 0;
@@ -134,6 +137,7 @@ export async function addSale(req, res) {
         if (!customer) {
           return res.status(404).json({ error: `Customer not found for ID: ${buyer.customerId}` });
         }
+        if (!assertTenantOwnership(req, customer)) return res.status(404).json({ error: 'Customer not found.' });
         saleData.customerId = customer.id || customer._id;
         saleData.customerName = customer.name;
 
@@ -171,11 +175,11 @@ export async function addSale(req, res) {
 
     const totalBatchAmount = totalSupplierCreditAmount;
 
-    // --- APPLY RATE TO SUPPLIER ---
-    // Update Stock Entry remaining quantity, total amount, and weighted average purchase rate
+    // --- APPLY RATE & RECORD TO CONSIGNMENT LOT ---
+    // Update Stock Entry remaining quantity, total gross realized amount, and weighted average purchase rate
     const updatedRemaining = currentRemaining - totalQtyRequested;
     const updatedTotalAmount = (stockEntry.totalAmount || 0) + totalBatchAmount;
-    const updatedPurchaseRate = Math.round((updatedTotalAmount / stockEntry.quantity) * 100) / 100;
+    const updatedPurchaseRate = stockEntry.quantity > 0 ? Math.round((updatedTotalAmount / stockEntry.quantity) * 100) / 100 : rate;
 
     await StockEntry.findByIdAndUpdate(stockEntry.id || stockEntry._id, {
       remainingQuantity: updatedRemaining,
@@ -183,8 +187,10 @@ export async function addSale(req, res) {
       purchaseRate: updatedPurchaseRate,
     });
 
-    // Note: Supplier Accounts and Supplier Ledger are NOT updated automatically when a sale occurs.
-    // They are posted to Outstanding Payables & Supplier Supply Value only when "Record to Payables & Supply Value" is explicitly clicked on the consignment lot.
+    // NOTE: Under Mandi Consignment Settlement architecture (Option B), daily batch sales decrement
+    // consignment stock and record customer receivables. The Supplier Ledger is NOT credited on individual sales;
+    // it is credited once with the net payable (gross sales minus commission, freight, labor/hamali & expenses)
+    // when the lot inspection is finalized and "Submit to Payables" (Bikri Parchi) is recorded.
 
     // Audit Log
     await AuditLog.create({
@@ -193,7 +199,7 @@ export async function addSale(req, res) {
       userName: req.user.name,
       userRole: req.user.role,
       action: 'ADD_BATCH_SALE',
-      details: `Sold ${totalQtyRequested} ${product.unit} of ${product.name} from supplier ${supplier.name} at rate Rs. ${rate} to ${buyers.length} buyers. Total: Rs. ${totalBatchAmount}.`,
+      details: `Sold ${totalQtyRequested} ${product.unit} of ${product.name} from consignment lot #${stockEntry.lotNumber || String(stockEntry.id || stockEntry._id).substring(0,8).toUpperCase()} (Supplier: ${supplier.name}) at rate Rs. ${rate} to ${buyers.length} buyers. Total Realization: Rs. ${totalBatchAmount}. Consignment remaining: ${updatedRemaining} ${product.unit}.`,
       timestamp: new Date().toISOString(),
     });
 
@@ -224,12 +230,14 @@ export async function deleteSale(req, res) {
     if (!sale) {
       return res.status(404).json({ error: 'Sale record not found.' });
     }
+    if (!assertTenantOwnership(req, sale)) return res.status(404).json({ error: 'Sale record not found.' });
 
     const tenantId = getTenantId(req) || sale.tenantId || 'tenant_default_001';
     const { productId, customerId, quantity, totalAmount, productName, customerName, stockEntryId, saleRate } = sale;
 
     // 1. Revert product inventory (increase stock back)
     const product = await Product.findById(productId);
+    if (product && !assertTenantOwnership(req, product)) return res.status(404).json({ error: 'Sale record not found.' });
     if (product) {
       await Product.findByIdAndUpdate(productId, {
         currentQuantity: product.currentQuantity + quantity,
@@ -238,6 +246,7 @@ export async function deleteSale(req, res) {
 
     // 2. Revert customer balance
     const customer = await Customer.findById(customerId);
+    if (customer && !assertTenantOwnership(req, customer)) return res.status(404).json({ error: 'Sale record not found.' });
     if (customer) {
       const revertedCustBalance = customer.currentBalance - totalAmount;
       await Customer.findByIdAndUpdate(customerId, {
@@ -263,6 +272,7 @@ export async function deleteSale(req, res) {
     if (stockEntryId) {
       const stockEntry = await StockEntry.findById(stockEntryId);
       if (stockEntry) {
+        if (!assertTenantOwnership(req, stockEntry)) return res.status(404).json({ error: 'Sale record not found.' });
         const revertQty = quantity;
         const revertAmt = quantity * saleRate;
 
@@ -275,6 +285,32 @@ export async function deleteSale(req, res) {
           totalAmount: newTotalAmount,
           purchaseRate: newPurchaseRate,
         });
+
+        // If the lot was already settled into payables previously, adjust the supplier balance and post reversal
+        if (stockEntry.isSettled && stockEntry.supplierId) {
+          const supplier = await Supplier.findById(stockEntry.supplierId);
+          if (supplier) {
+            if (!assertTenantOwnership(req, supplier)) return res.status(404).json({ error: 'Sale record not found.' });
+            const revertedSuppBalance = (supplier.currentBalance || 0) + revertAmt;
+            const revertedTotalSupplied = Math.max(0, (supplier.totalSupplied || 0) - revertAmt);
+            await Supplier.findByIdAndUpdate(stockEntry.supplierId, {
+              currentBalance: revertedSuppBalance,
+              remainingBalance: revertedSuppBalance,
+              totalSupplied: revertedTotalSupplied,
+            });
+
+            await Ledger.create({
+              tenantId,
+              partyId: stockEntry.supplierId,
+              partyType: 'Supplier',
+              date: new Date().toISOString().split('T')[0],
+              type: 'Debit',
+              amount: revertAmt,
+              balanceAfter: revertedSuppBalance,
+              description: `DELETED SALE REVERSAL: Cancelled batch sale of ${quantity} ${productName || 'units'} @ Rs. ${saleRate} from settled lot #${stockEntry.lotNumber || ''} (Buyer: ${customerName || 'Customer'})`,
+            });
+          }
+        }
       }
     }
 

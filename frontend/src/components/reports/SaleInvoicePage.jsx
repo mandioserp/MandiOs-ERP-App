@@ -13,6 +13,7 @@ export default function SaleInvoicePage() {
   const [selectedSaleId, setSelectedSaleId] = useState(initialSaleId);
   const [saleDetails, setSaleDetails] = useState(null);
   const [invoiceSettings, setInvoiceSettings] = useState(null);
+  const [businessProfile, setBusinessProfile] = useState(null);
   const [paperSize, setPaperSize] = useState('A4 Standard');
   const [loading, setLoading] = useState(true);
 
@@ -23,9 +24,10 @@ export default function SaleInvoicePage() {
   const fetchInvoiceData = async () => {
     try {
       setLoading(true);
-      const [salesRes, settingsRes] = await Promise.all([
+      const [salesRes, settingsRes, bizRes] = await Promise.all([
         api.get('/sales').catch(() => ({ data: [] })),
-        api.get('/settings/invoice').catch(() => ({ data: null }))
+        api.get('/settings/invoice').catch(() => ({ data: null })),
+        api.get('/settings/business').catch(() => ({ data: null }))
       ]);
 
       const salesList = salesRes.data || [];
@@ -34,6 +36,10 @@ export default function SaleInvoicePage() {
       const invSet = settingsRes.data || {};
       setInvoiceSettings(invSet);
       if (invSet.paperSize) setPaperSize(invSet.paperSize);
+
+      if (bizRes?.data) {
+        setBusinessProfile(bizRes.data);
+      }
 
       let saleToUse = null;
       if (selectedSaleId) {
@@ -176,9 +182,9 @@ export default function SaleInvoicePage() {
             {/* Invoice Header */}
             <div className={`flex ${paperSize === 'Thermal 3-inch' ? 'flex-col items-center text-center' : 'justify-between items-start'} border-b-2 border-slate-200 dark:border-slate-700 pb-4`}>
               <div>
-                {invoiceSettings?.companyLogo ? (
+                {invoiceSettings?.companyLogo || businessProfile?.logo ? (
                   <img
-                    src={invoiceSettings.companyLogo}
+                    src={invoiceSettings?.companyLogo || businessProfile?.logo}
                     alt="Company Logo"
                     className="h-12 object-contain mb-2"
                     referrerPolicy="no-referrer"
@@ -193,18 +199,28 @@ export default function SaleInvoicePage() {
                     />
                     <div>
                       <h2 className="text-lg font-black tracking-wider uppercase text-[#4F46E5] dark:text-indigo-400">
-                        {invoiceSettings?.header || 'Mandi OS - Sabzi & Fruit Broker'}
+                        {businessProfile?.businessName || invoiceSettings?.header || 'Sabzi & Fruit Mandi Trade Brokerage'}
                       </h2>
-                      <p className="text-[10px] text-slate-500 dark:text-slate-400 uppercase tracking-widest font-bold">Commission Agent & Wholesaler</p>
+                      <div className="flex flex-wrap items-center gap-x-2 text-[10px] text-slate-700 dark:text-slate-300 font-semibold">
+                        {businessProfile?.ownerName && (
+                          <span className="font-bold text-slate-900 dark:text-white">Proprietor: {businessProfile.ownerName}</span>
+                        )}
+                        <span className="text-slate-500 uppercase tracking-widest font-bold">Commission Agent</span>
+                      </div>
                     </div>
                   </div>
                 )}
-                {invoiceSettings?.companyAddress && (
-                  <p className="text-[10px] text-slate-600 dark:text-slate-400 mt-1">{invoiceSettings.companyAddress}</p>
-                )}
-                {invoiceSettings?.companyPhone && (
-                  <p className="text-[10px] text-slate-600 dark:text-slate-400">Tel: {invoiceSettings.companyPhone}</p>
-                )}
+                <div className="text-[10px] text-slate-600 dark:text-slate-400 mt-1 space-y-0.5">
+                  {(businessProfile?.address || invoiceSettings?.companyAddress) && (
+                    <p>📍 {[businessProfile?.address || invoiceSettings?.companyAddress, businessProfile?.city].filter(Boolean).join(', ')}</p>
+                  )}
+                  {(businessProfile?.mobileNumber || businessProfile?.whatsAppNumber || invoiceSettings?.companyPhone) && (
+                    <p>📞 Tel/WhatsApp: {[businessProfile?.mobileNumber, businessProfile?.whatsAppNumber, invoiceSettings?.companyPhone].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(' / ')}</p>
+                  )}
+                  {businessProfile?.businessCode && (
+                    <p className="font-mono text-[9px] font-bold text-slate-500">Mandi Arthi Code: {businessProfile.businessCode}</p>
+                  )}
+                </div>
               </div>
 
               <div className={paperSize === 'Thermal 3-inch' ? 'text-center mt-2 pt-2 border-t border-dashed border-slate-300 dark:border-slate-700 w-full' : 'text-right'}>

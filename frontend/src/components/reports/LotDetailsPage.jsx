@@ -4,6 +4,7 @@ import { useLanguage } from '../../context/LanguageContext';
 import { exportToCSV } from '../../utils/navigation';
 import { downloadLotVoucherPDF } from '../../utils/pdfExport';
 import { Printer, Download, RefreshCw, Boxes, DollarSign, Calendar, Save, CheckCircle2, AlertCircle, Users, User, Layers, ShoppingBag, ArrowRight } from 'lucide-react';
+import PrintReportHeader from '../common/PrintReportHeader.jsx';
 
 export default function LotDetailsPage() {
   const { t } = useLanguage();
@@ -14,6 +15,7 @@ export default function LotDetailsPage() {
   const [selectedLotId, setSelectedLotId] = useState(initialLotId);
   const [activeStock, setActiveStock] = useState(null);
   const [lotSales, setLotSales] = useState([]);
+  const [lotReturns, setLotReturns] = useState([]);
   const [expenseCategories, setExpenseCategories] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -33,14 +35,16 @@ export default function LotDetailsPage() {
   const fetchLotData = async () => {
     try {
       setLoading(true);
-      const [stockRes, salesRes, expCatRes] = await Promise.all([
+      const [stockRes, salesRes, expCatRes, returnsRes] = await Promise.all([
         api.get('/stock').catch(() => ({ data: [] })),
         api.get('/sales').catch(() => ({ data: [] })),
-        api.get('/settings/expense-categories').catch(() => ({ data: [] }))
+        api.get('/settings/expense-categories').catch(() => ({ data: [] })),
+        api.get('/returns').catch(() => ({ data: [] }))
       ]);
 
       const stockList = stockRes.data || [];
       const allSales = salesRes.data || [];
+      const allReturns = returnsRes.data || [];
       setStockEntries(stockList);
       setExpenseCategories((expCatRes.data || []).filter(c => c.status !== 'Inactive'));
 
@@ -73,6 +77,15 @@ export default function LotDetailsPage() {
         });
         setLotSales(linkedSales);
 
+        const linkedReturns = allReturns.filter(r => {
+          const rStockId = r.stockEntryId ? String(r.stockEntryId) : null;
+          const rSaleId = r.saleId ? String(r.saleId) : null;
+          const matchesStock = rStockId && lotIdToMatch && rStockId === lotIdToMatch;
+          const matchesSale = rSaleId && linkedSales.some(s => String(s.id || s._id) === rSaleId);
+          return (matchesStock || matchesSale) && (r.status === 'Approved') && (!r.isDeleted);
+        });
+        setLotReturns(linkedReturns);
+
         // Sync settlement fields
         setLotFinCommType(lotToUse.supplierCommissionType || 'Percentage');
         setLotFinCommValue(lotToUse.supplierCommissionValue !== undefined ? lotToUse.supplierCommissionValue : 0);
@@ -86,13 +99,36 @@ export default function LotDetailsPage() {
     }
   };
 
-  // Calculations
-  const lotGrossSales = lotSales.reduce((acc, curr) => acc + (curr.grossSale || (curr.quantity * curr.saleRate)), 0);
-  const lotQtySold = lotSales.reduce((acc, curr) => acc + (curr.quantity || 0), 0);
+  // Calculations (Net of produce returns)
+  const rawLotGrossSales = lotSales.reduce((acc, curr) => acc + (curr.grossSale || (curr.quantity * curr.saleRate)), 0);
+  const rawLotQtySold = lotSales.reduce((acc, curr) => acc + (curr.quantity || 0), 0);
+
+  const returnedLotGross = lotReturns.reduce((acc, r) => acc + (Number(r.grossReturnAmount) || (Number(r.produceReturnedQty || 0) * Number(r.saleRate || 0))), 0);
+  const returnedLotQty = lotReturns.reduce((acc, r) => acc + (Number(r.produceReturnedQty) || 0), 0);
+
+  const lotGrossSales = Math.max(0, Math.round((rawLotGrossSales - returnedLotGross) * 100) / 100);
+  const lotQtySold = Math.max(0, rawLotQtySold - returnedLotQty);
   const arrivedQty = activeStock?.totalQuantity || activeStock?.quantity || 0;
   const remainingQty = Math.max(0, arrivedQty - lotQtySold);
 
-  // Date-wise breakdown calculation
+  const rawBuyerCommission = lotSales.reduce((acc, curr) => acc + (curr.commissionAmount || curr.commission || 0), 0);
+  const returnedBuyerCommission = lotReturns.reduce((acc, r) => {
+    let rev = Number(r.commissionReversedAmount) || 0;
+    if (!rev && Number(r.produceReturnedQty) > 0) {
+      const matchingSale = lotSales.find(s => String(s.id || s._id) === String(r.saleId));
+      if (matchingSale && matchingSale.quantity > 0 && matchingSale.commissionAmount > 0) {
+        rev = Number(r.produceReturnedQty) * (Number(matchingSale.commissionAmount) / Number(matchingSale.quantity));
+      } else {
+        const commRate = parseFloat(String(r.commissionRate || 0).replace(/[^\d.]/g, '')) || 0;
+        const retGross = Number(r.grossReturnAmount) || (Number(r.produceReturnedQty || 0) * Number(r.saleRate || 0));
+        rev = retGross * (commRate / 100);
+      }
+    }
+    return acc + (rev || 0);
+  }, 0);
+  const netBuyerCommission = Math.max(0, Math.round((rawBuyerCommission - returnedBuyerCommission) * 100) / 100);
+
+  // Date-wise breakdown calculation adjusted for returns
   const dateGroupsMap = lotSales.reduce((acc, sale) => {
     const sDate = sale.date || (sale.createdAt ? new Date(sale.createdAt).toISOString().split('T')[0] : 'Unknown Date');
     if (!acc[sDate]) {
@@ -118,6 +154,36 @@ export default function LotDetailsPage() {
     acc[sDate].commission += (sale.commissionAmount || sale.commission || 0);
     return acc;
   }, {});
+
+  // Deduct returns from date groups
+  lotReturns.forEach(r => {
+    const matchingSale = lotSales.find(s => String(s.id || s._id) === String(r.saleId));
+    const rDate = matchingSale?.date || r.date || 'Unknown Date';
+    const rQty = Number(r.produceReturnedQty) || 0;
+    const rGross = Number(r.grossReturnAmount) || (rQty * Number(r.saleRate || 0));
+    let rComm = Number(r.commissionReversedAmount) || 0;
+    if (!rComm && rQty > 0) {
+      if (matchingSale && matchingSale.quantity > 0 && matchingSale.commissionAmount > 0) {
+        rComm = rQty * (Number(matchingSale.commissionAmount) / Number(matchingSale.quantity));
+      } else {
+        const commRate = parseFloat(String(r.commissionRate || 0).replace(/[^\d.]/g, '')) || 0;
+        rComm = rGross * (commRate / 100);
+      }
+    }
+
+    if (dateGroupsMap[rDate]) {
+      dateGroupsMap[rDate].totalQty = Math.max(0, dateGroupsMap[rDate].totalQty - rQty);
+      dateGroupsMap[rDate].grossValue = Math.max(0, dateGroupsMap[rDate].grossValue - rGross);
+      dateGroupsMap[rDate].commission = Math.max(0, Math.round((dateGroupsMap[rDate].commission - rComm) * 100) / 100);
+    } else {
+      const altDate = r.date || 'Unknown Date';
+      if (dateGroupsMap[altDate]) {
+        dateGroupsMap[altDate].totalQty = Math.max(0, dateGroupsMap[altDate].totalQty - rQty);
+        dateGroupsMap[altDate].grossValue = Math.max(0, dateGroupsMap[altDate].grossValue - rGross);
+        dateGroupsMap[altDate].commission = Math.max(0, Math.round((dateGroupsMap[altDate].commission - rComm) * 100) / 100);
+      }
+    }
+  });
 
   const sortedDateGroups = Object.values(dateGroupsMap).sort((a, b) => new Date(b.date) - new Date(a.date));
 
@@ -148,6 +214,7 @@ export default function LotDetailsPage() {
 
   const computedTotalDeductions = Math.round((computedSupplierCommDeduction + computedMarketFeeDeduction + computedTotalExpenses) * 100) / 100;
   const computedNetPayable = Math.round((lotGrossSales - computedTotalDeductions) * 100) / 100;
+  const totalBrokerCommission = Math.round((netBuyerCommission + computedSupplierCommDeduction) * 100) / 100;
 
   const handleSaveLotFinancials = async () => {
     if (!activeStock) return;
@@ -256,10 +323,10 @@ export default function LotDetailsPage() {
             <CheckCircle2 size={14} />
             <span>
               {recordingSettlement
-                ? 'Posting...'
+                ? 'Settling...'
                 : (activeStock?.isSettled
-                    ? `✓ Recorded (Rs. ${(activeStock?.settledAmount || computedNetPayable || 0).toLocaleString()})`
-                    : 'Record to Payables & Supply Value')}
+                    ? `✓ Settled in Payables (Rs. ${(activeStock?.settledAmount || computedNetPayable || 0).toLocaleString()})`
+                    : 'Submit to Payables (Bikri Parchi)')}
             </span>
           </button>
 
@@ -316,22 +383,21 @@ export default function LotDetailsPage() {
       </div>
 
       {/* Printable Letterhead Header */}
-      <div className="hidden print:block text-slate-900 border-b-2 border-slate-300 pb-4 mb-6">
-        <div className="flex justify-between items-start">
-          <div>
-            <h1 className="text-2xl font-black uppercase tracking-wider">LAHORE SABZI & FRUIT MANDI BROKERAGE</h1>
-            <p className="text-sm font-bold text-indigo-700">Consignment Lot Settlement & Date-Wise Sales Sheet — Lot #{activeStock?.lotNumber}</p>
-            <p className="text-xs text-slate-500 mt-1">Generated: {new Date().toLocaleString()}</p>
-          </div>
-          {activeStock && (
-            <div className="text-right text-xs">
-              <p className="font-bold text-base">Supplier: {activeStock.supplierName}</p>
-              <p>Product: {activeStock.productName} ({activeStock.unit})</p>
-              <p>Arrival Date: {activeStock.arrivalDate || activeStock.date}</p>
-            </div>
-          )}
-        </div>
-      </div>
+      <PrintReportHeader
+        title={`CONSIGNMENT LOT SETTLEMENT SHEET — LOT #${activeStock?.lotNumber || ''}`}
+        period={`Arrival: ${activeStock?.arrivalDate || activeStock?.date || 'N/A'}`}
+        filters={[
+          { label: 'Supplier', value: activeStock?.supplierName || 'N/A' },
+          { label: 'Produce Item', value: `${activeStock?.productName || 'Produce'} (${activeStock?.unit || 'units'})` },
+          { label: 'Clearance Status', value: `${lotClearanceRate}% Cleared` }
+        ]}
+        summaryMetrics={[
+          { label: 'Total Received', value: `${activeStock?.quantity || 0} ${activeStock?.unit || 'units'}` },
+          { label: 'Units Sold', value: `${totalSoldQty.toLocaleString()} units` },
+          { label: 'Gross Sales Value', value: `Rs. ${totalGrossSale.toLocaleString()}` },
+          { label: 'Net Supplier Payable', value: `Rs. ${netGrowerPayable.toLocaleString()}` }
+        ]}
+      />
 
       {loading ? (
         <div className="py-16 text-center text-slate-400 bg-white dark:bg-[#1E293B] rounded-2xl border border-slate-200 dark:border-slate-800">
@@ -344,6 +410,54 @@ export default function LotDetailsPage() {
         </div>
       ) : (
         <div className="space-y-6">
+          {/* Lot Overview KPI Cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="bg-white dark:bg-[#1E293B] p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
+              <span className="text-[10px] font-black uppercase text-slate-500 block">Arrived Qty</span>
+              <p className="text-base font-black text-slate-900 dark:text-white mt-1">
+                {arrivedQty} <span className="text-[10px] font-normal text-slate-500">{activeStock.unit || 'units'}</span>
+              </p>
+            </div>
+
+            <div className="bg-white dark:bg-[#1E293B] p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
+              <span className="text-[10px] font-black uppercase text-slate-500 block">Net Sold Qty</span>
+              <p className="text-base font-black text-indigo-600 dark:text-indigo-400 mt-1">
+                {lotQtySold} <span className="text-[10px] font-normal text-slate-500">{activeStock.unit || 'units'}</span>
+              </p>
+            </div>
+
+            <div className="bg-white dark:bg-[#1E293B] p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
+              <span className="text-[10px] font-black uppercase text-slate-500 block">Returned Produce</span>
+              <p className="text-base font-black text-rose-600 dark:text-rose-400 mt-1">
+                {returnedLotQty} <span className="text-[10px] font-normal text-slate-500">{activeStock.unit || 'units'}</span>
+              </p>
+            </div>
+
+            <div className="bg-white dark:bg-[#1E293B] p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
+              <span className="text-[10px] font-black uppercase text-slate-500 block">Remaining Balance</span>
+              <p className="text-base font-black text-amber-600 dark:text-amber-400 mt-1">
+                {remainingQty} <span className="text-[10px] font-normal text-slate-500">{activeStock.unit || 'units'}</span>
+              </p>
+            </div>
+
+            <div className="bg-white dark:bg-[#1E293B] p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
+              <span className="text-[10px] font-black uppercase text-slate-500 block">Net Gross Turnover</span>
+              <p className="text-base font-black text-emerald-600 dark:text-emerald-400 mt-1">
+                Rs. {lotGrossSales.toLocaleString()}
+              </p>
+            </div>
+
+            <div className="bg-white dark:bg-[#1E293B] p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
+              <span className="text-[10px] font-black uppercase text-slate-500 block">Broker Commission</span>
+              <p className="text-base font-black text-indigo-600 dark:text-indigo-400 mt-1">
+                Rs. {totalBrokerCommission.toLocaleString()}
+              </p>
+              <p className="text-[9px] opacity-60 font-semibold uppercase mt-0.5">
+                Buyer: Rs. {netBuyerCommission.toLocaleString()} | Supp: Rs. {Math.round(computedSupplierCommDeduction).toLocaleString()}
+              </p>
+            </div>
+          </div>
+
           {/* Date-Wise Consignment Sales Breakdown */}
           <div className="space-y-6">
             <div className="flex items-center justify-between">

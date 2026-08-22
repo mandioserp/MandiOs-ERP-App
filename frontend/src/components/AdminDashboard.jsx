@@ -3,10 +3,11 @@ import api from '../utils/api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useLanguage } from '../context/LanguageContext.jsx';
 import { useConfirm } from '../context/ConfirmContext.jsx';
+import DialogAlert from './common/DialogAlert.jsx';
 import {
   TrendingUp, ArrowDownRight, ArrowUpRight, Plus, Pencil, Trash, Trash2,
   Search, ShieldAlert, Calendar, FileSpreadsheet, Eye, Printer, Filter, CheckCircle2, Boxes, X, ShoppingBag,
-  Truck, DollarSign, Activity, FileText, Tag, CheckSquare, Layers, Percent, Clock, UserCheck, Users, RefreshCw, ChevronDown, ArrowUpDown, ArrowDown, ArrowUp, Download, ArrowDownLeft, CreditCard, RotateCcw, Receipt
+  Truck, DollarSign, Activity, FileText, Tag, CheckSquare, Layers, Percent, Clock, UserCheck, Users, RefreshCw, ChevronDown, ArrowUpDown, ArrowDown, ArrowUp, Download, ArrowDownLeft, CreditCard, RotateCcw, Receipt, Lock
 } from 'lucide-react';
 import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar,
@@ -47,6 +48,7 @@ function SearchablePartySelect({ partyType, partyId, suppliers = [], customers =
     return partiesList.filter(p => 
       (p.name && p.name.toLowerCase().includes(term)) ||
       (p.phone && p.phone.toLowerCase().includes(term)) ||
+      (p.khataId && String(p.khataId).toLowerCase().includes(term)) ||
       (p.code && String(p.code).toLowerCase().includes(term))
     );
   }, [partiesList, searchTerm]);
@@ -78,7 +80,7 @@ function SearchablePartySelect({ partyType, partyId, suppliers = [], customers =
       >
         <span className={selectedParty ? 'text-slate-900 dark:text-white font-bold truncate' : 'text-slate-400 truncate'}>
           {selectedParty ? (
-            `${selectedParty.name} (${partyType === 'Supplier' ? `Debt: Rs. ${Math.abs(selectedParty.currentBalance || 0).toLocaleString()}` : `Receivable: Rs. ${(selectedParty.currentBalance || 0).toLocaleString()}`})`
+            `${selectedParty.name}${selectedParty.khataId ? ` [${selectedParty.khataId}]` : ''} (${partyType === 'Supplier' ? `Debt: Rs. ${Math.abs(selectedParty.currentBalance || 0).toLocaleString()}` : `Receivable: Rs. ${(selectedParty.currentBalance || 0).toLocaleString()}`})`
           ) : (
             partyType ? `Click to search or select ${partyType}...` : 'First Select Party Type'
           )}
@@ -128,7 +130,14 @@ function SearchablePartySelect({ partyType, partyId, suppliers = [], customers =
                     }`}
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="font-semibold text-slate-900 dark:text-white truncate">{p.name}</div>
+                      <div className="flex items-center gap-1.5 truncate">
+                        <span className="font-semibold text-slate-900 dark:text-white">{p.name}</span>
+                        {(p.khataId || p.code) && (
+                          <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 shrink-0">
+                            {p.khataId || p.code}
+                          </span>
+                        )}
+                      </div>
                       {p.phone && <div className="text-[10px] text-slate-400 truncate">Phone: {p.phone}</div>}
                     </div>
                     <div className="text-right text-[11px] font-bold text-slate-500 dark:text-slate-400 shrink-0">
@@ -369,6 +378,7 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
   const [stockEntries, setStockEntries] = useState([]);
   const [sales, setSales] = useState([]);
   const [payments, setPayments] = useState([]);
+  const [returns, setReturns] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
   const [reportsData, setReportsData] = useState(null);
   const [expenses, setExpenses] = useState([]);
@@ -395,6 +405,7 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
   const [filterSupplier, setFilterSupplier] = useState('');
   const [filterCustomer, setFilterCustomer] = useState('');
   const [filterDate, setFilterDate] = useState('');
+  const [filterStockStatus, setFilterStockStatus] = useState('');
   
   // Custom Dashboard Global Filters
   const [filterCategory, setFilterCategory] = useState('');
@@ -439,6 +450,7 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
   const [modalMode, setModalMode] = useState('add'); // 'add', 'edit'
   const [selectedItem, setSelectedItem] = useState(null);
   const [formData, setFormData] = useState({});
+  const [modalAlert, setModalAlert] = useState(null);
 
   // Pay or Receive Tab Inline Form State
   const [payReceiveFormData, setPayReceiveFormData] = useState({
@@ -525,7 +537,7 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
     try {
       const [
         clerksRes, suppliersRes, customersRes, productsRes,
-        stockRes, salesRes, paymentsRes, auditRes, reportsRes,
+        stockRes, salesRes, paymentsRes, returnsRes, auditRes, reportsRes,
         expensesRes, trucksRes, employeesRes, salariesRes, advancesRes,
         invoiceSettingsRes, unitsRes, expCatsRes, payMethodsRes,
         deletedUsersRes
@@ -537,6 +549,7 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
         api.get('/stock').catch(() => ({ data: [] })),
         api.get('/sales').catch(() => ({ data: [] })),
         api.get('/payments').catch(() => ({ data: [] })),
+        api.get('/returns').catch(() => ({ data: [] })),
         api.get('/audit').catch(() => ({ data: [] })),
         api.get(`/reports?type=${reportType}${reportType === 'custom' ? `&startDate=${customStart}&endDate=${customEnd}` : ''}&productId=${filterProduct}&supplierId=${filterSupplier}&customerId=${filterCustomer}&category=${filterCategory}&truckNumber=${filterTruck}&clerkId=${filterClerk}`).catch(() => ({ data: null })),
         api.get('/expenses').catch(() => ({ data: [] })),
@@ -560,6 +573,7 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
       setStockEntries(extractArray(stockRes.data));
       setSales(extractArray(salesRes.data));
       setPayments(extractArray(paymentsRes.data));
+      setReturns(extractArray(returnsRes.data));
       setAuditLogs(extractArray(auditRes.data));
       setReportsData(reportsRes.data || null);
       setExpenses(extractArray(expensesRes.data));
@@ -617,13 +631,18 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
   }, [tab, reportType, customStart, customEnd, filterProduct, filterSupplier, filterCustomer, filterCategory, filterTruck, filterClerk]);
 
   // Open Add/Edit modals
-  const openModal = (type, mode, item = null) => {
+  const openModal = async (type, mode, item = null) => {
     setModalType(type);
     setModalMode(mode);
     setSelectedItem(item);
+    setModalAlert(null);
 
     if (mode === 'edit' && item) {
-      setFormData({ ...item, password: '' }); // reset password field for edit
+      setFormData({
+        ...item,
+        khataId: item.khataId || item.code || '',
+        password: ''
+      }); // reset password field for edit
     } else {
       if (type === 'payment') {
         const defaultMethod = (paymentMethods || []).find(m => m.status === 'Active' || !m.status)?.name || 'Cash';
@@ -635,6 +654,26 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
           paymentMethod: defaultMethod,
           description: ''
         });
+      } else if (type === 'supplier') {
+        setFormData({ khataId: '' });
+        try {
+          const res = await api.get('/suppliers/next-khata-id');
+          if (res.data?.nextKhataId) {
+            setFormData(prev => ({ ...prev, khataId: res.data.nextKhataId }));
+          }
+        } catch (e) {
+          // ignore or fallback
+        }
+      } else if (type === 'customer') {
+        setFormData({ khataId: '' });
+        try {
+          const res = await api.get('/customers/next-khata-id');
+          if (res.data?.nextKhataId) {
+            setFormData(prev => ({ ...prev, khataId: res.data.nextKhataId }));
+          }
+        } catch (e) {
+          // ignore or fallback
+        }
       } else {
         setFormData({});
       }
@@ -645,6 +684,7 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
     setModalType(null);
     setSelectedItem(null);
     setFormData({});
+    setModalAlert(null);
   };
 
   // Handle Form Change
@@ -658,6 +698,7 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
     e.preventDefault();
     if (modalSubmitting) return;
     setModalSubmitting(true);
+    setModalAlert(null);
     try {
       let endpoint = '';
       if (modalType === 'clerk') endpoint = '/clerks';
@@ -692,14 +733,64 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
       closeModal();
       fetchData();
     } catch (err) {
-      showToast(err.response?.data?.error || 'Failed to submit form', 'error');
+      const errMsg = err.response?.data?.error || 'Failed to submit form';
+      if (modalType) {
+        setModalAlert({ type: 'error', message: errMsg });
+      } else {
+        showToast(errMsg, 'error');
+      }
     } finally {
       setModalSubmitting(false);
     }
   };
 
+  // Helper to check if a supplier has linked data in the application
+  const isSupplierLinked = (sup) => {
+    if (!sup) return false;
+    const sId = String(sup.id || sup._id);
+    const sName = sup.name ? sup.name.trim().toLowerCase() : '';
+    if (Math.abs(Number(sup.currentBalance) || 0) > 0.01) return true;
+    if (Math.abs(Number(sup.remainingBalance) || 0) > 0.01) return true;
+    if (Number(sup.totalSupplied) > 0 || Number(sup.totalPaid) > 0) return true;
+    if (stockEntries?.some(st => String(st.supplierId) === sId || (st.supplierName && st.supplierName.trim().toLowerCase() === sName))) return true;
+    if (payments?.some(p => p.partyType === 'Supplier' && (String(p.partyId) === sId || (p.partyName && p.partyName.trim().toLowerCase() === sName)))) return true;
+    if (trucks?.some(t => String(t.supplierId) === sId || (t.supplierName && t.supplierName.trim().toLowerCase() === sName))) return true;
+    if (returns?.some(r => String(r.supplierId) === sId || (r.supplierName && r.supplierName.trim().toLowerCase() === sName))) return true;
+    return false;
+  };
+
+  // Helper to check if a customer has linked data in the application
+  const isCustomerLinked = (cust) => {
+    if (!cust) return false;
+    const cId = String(cust.id || cust._id);
+    const cName = cust.name ? cust.name.trim().toLowerCase() : '';
+    if (Math.abs(Number(cust.currentBalance) || 0) > 0.01) return true;
+    if (Math.abs(Number(cust.remainingBalance) || 0) > 0.01) return true;
+    if (Number(cust.totalPurchases) > 0 || Number(cust.totalPaid) > 0) return true;
+    if (sales?.some(s => String(s.customerId) === cId || (s.customerName && s.customerName.trim().toLowerCase() === cName))) return true;
+    if (payments?.some(p => p.partyType === 'Customer' && (String(p.partyId) === cId || (p.partyName && p.partyName.trim().toLowerCase() === cName)))) return true;
+    if (returns?.some(r => String(r.customerId) === cId || (r.customerName && r.customerName.trim().toLowerCase() === cName))) return true;
+    return false;
+  };
+
   // Handle Delete with Confirmation
   const handleDelete = async (type, id, name) => {
+    if (type === 'supplier') {
+      const sup = suppliers.find(s => String(s.id || s._id) === String(id));
+      if (isSupplierLinked(sup)) {
+        showToast(`Cannot delete supplier "${name}": This supplier has linked transactions/records (stock arrivals, payments, or ledger entries) in the application.`, 'error');
+        return;
+      }
+    }
+
+    if (type === 'customer') {
+      const cust = customers.find(c => String(c.id || c._id) === String(id));
+      if (isCustomerLinked(cust)) {
+        showToast(`Cannot delete customer "${name}": This customer has linked transactions/records (sales invoices, payments, or ledger entries) in the application.`, 'error');
+        return;
+      }
+    }
+
     const isUserType = ['clerk', 'supplier', 'customer', 'employee'].includes(type);
     const confirmMsg = isUserType
       ? `Are you sure you want to delete ${name}? This user will be soft-deleted and moved to the Deleted Users / Trash section, where they can be restored anytime.`
@@ -822,15 +913,103 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
     }, 500);
   };
 
-  // Loading Screen
-  if (loading && !reportsData) {
-    return (
-      <div className="flex flex-col items-center justify-center py-20 space-y-4">
-        <div className="w-12 h-12 border-4 border-[#4F46E5] border-t-transparent rounded-full animate-spin" />
-        <p className="text-sm font-semibold tracking-wide text-slate-500 dark:text-slate-400">{t("Loading Brokerage Dashboard...")}</p>
-      </div>
-    );
-  }
+  // Enriched Stock Entries with Returns calculations
+  const enrichedStockEntries = React.useMemo(() => {
+    return stockEntries.map(entry => {
+      const entryId = String(entry.id || entry._id);
+      const lotNumStr = entry.lotNumber ? String(entry.lotNumber) : null;
+
+      // Find linked sales
+      const lotSales = (sales || []).filter(s => {
+        if (s.isDeleted) return false;
+        const sStockId = s.stockEntryId ? String(s.stockEntryId) : null;
+        const sLotNum = s.stockLotNumber ? String(s.stockLotNumber) : null;
+        if (sStockId && sStockId === entryId) return true;
+        if (sLotNum && lotNumStr && sLotNum === lotNumStr) return true;
+        return false;
+      });
+
+      // Find linked approved returns
+      const lotReturns = (returns || []).filter(r => {
+        if (r.isDeleted || r.status !== 'Approved') return false;
+        const rStockId = r.stockEntryId ? String(r.stockEntryId) : null;
+        const rSaleId = r.saleId ? String(r.saleId) : null;
+        const matchesStock = (rStockId && rStockId === entryId);
+        const matchesSale = rSaleId && lotSales.some(s => String(s.id || s._id) === rSaleId);
+        return matchesStock || matchesSale;
+      });
+
+      const arrivedQty = entry.arrivedQuantity !== undefined ? Number(entry.arrivedQuantity) : (Number(entry.quantity) || 0);
+      const rawSoldQty = lotSales.length > 0
+        ? lotSales.reduce((acc, s) => acc + (Number(s.quantity) || 0), 0)
+        : (entry.soldQuantity !== undefined ? Number(entry.soldQuantity) : 0);
+
+      const returnedProduceQty = lotReturns.length > 0
+        ? lotReturns.reduce((acc, r) => acc + (Number(r.produceReturnedQty) || 0), 0)
+        : (entry.returnedQuantity !== undefined ? Number(entry.returnedQuantity) : 0);
+
+      const netSoldQty = Math.max(0, rawSoldQty - returnedProduceQty);
+      const remainingQty = entry.remainingQuantity !== undefined 
+        ? Number(entry.remainingQuantity) 
+        : Math.max(0, arrivedQty - netSoldQty);
+
+      const rawGrossSales = lotSales.reduce((acc, s) => acc + (Number(s.grossSale) || (Number(s.quantity || 0) * Number(s.saleRate || 0)) || 0), 0);
+      const returnedGross = lotReturns.reduce((acc, r) => acc + (Number(r.grossReturnAmount) || (Number(r.produceReturnedQty || 0) * Number(r.saleRate || 0)) || 0), 0);
+      const totalAmount = (rawGrossSales > 0 || returnedGross > 0)
+        ? Math.max(0, Math.round((rawGrossSales - returnedGross) * 100) / 100)
+        : (Number(entry.totalAmount) || 0);
+
+      const avgRate = netSoldQty > 0 
+        ? (Math.round((totalAmount / netSoldQty) * 100) / 100)
+        : (Number(entry.purchaseRate) || 0);
+
+      const status = remainingQty === 0 ? 'Depleted' : (netSoldQty > 0 ? 'Partially Sold' : 'In-Stock');
+      const lotNumber = entry.lotNumber || (entryId.substring(0, 6).toUpperCase());
+      const unit = entry.unit || 'Crates';
+
+      return {
+        ...entry,
+        lotNumber,
+        unit,
+        arrivedQty,
+        soldQty: rawSoldQty,
+        returnedProduceQty,
+        netSoldQty,
+        remainingQty,
+        avgRate,
+        totalAmount,
+        status,
+      };
+    });
+  }, [stockEntries, sales, returns]);
+
+  // Stock Summary calculations
+  const stockSummary = React.useMemo(() => {
+    let totalLots = enrichedStockEntries.length;
+    let totalArrived = 0;
+    let totalSold = 0;
+    let totalReturned = 0;
+    let totalRemaining = 0;
+    let totalCreditedAmount = 0;
+
+    enrichedStockEntries.forEach(item => {
+      totalArrived += (item.arrivedQty || 0);
+      totalSold += (item.soldQty || 0);
+      totalReturned += (item.returnedProduceQty || 0);
+      totalRemaining += (item.remainingQty || 0);
+      totalCreditedAmount += (item.totalAmount || 0);
+    });
+
+    return {
+      totalLots,
+      totalArrived,
+      totalSold,
+      totalReturned,
+      netSold: Math.max(0, totalSold - totalReturned),
+      totalRemaining,
+      totalCreditedAmount
+    };
+  }, [enrichedStockEntries]);
 
   // Parse dynamic financial summary from report API
   const fSummary = reportsData?.financialSummary || {
@@ -919,10 +1098,13 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
 
     // Search bar filter
     if (searchTerm) {
+      const term = searchTerm.toLowerCase();
       filtered = filtered.filter(item => 
         Object.values(item).some(val => 
-          String(val).toLowerCase().includes(searchTerm.toLowerCase())
-        )
+          String(val).toLowerCase().includes(term)
+        ) ||
+        (item.lotNumber && String(item.lotNumber).toLowerCase().includes(term)) ||
+        (item.vehicleNumber && String(item.vehicleNumber).toLowerCase().includes(term))
       );
     }
 
@@ -940,6 +1122,9 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
       if (filterDate) {
         filtered = filtered.filter(item => item.date === filterDate);
       }
+      if (tab === 'stock' && filterStockStatus) {
+        filtered = filtered.filter(item => item.status === filterStockStatus);
+      }
     }
 
     // Pagination bounds
@@ -950,6 +1135,16 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
 
     return { paginated, totalPages, totalItems };
   };
+
+  // Loading Screen
+  if (loading && !reportsData) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 space-y-4">
+        <div className="w-12 h-12 border-4 border-[#4F46E5] border-t-transparent rounded-full animate-spin" />
+        <p className="text-sm font-semibold tracking-wide text-slate-500 dark:text-slate-400">{t("Loading Brokerage Dashboard...")}</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -2432,7 +2627,14 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
                   {filterAndPaginate(suppliers).paginated.map(sup => (
                     <tr key={sup.id || sup._id} className="hover:bg-slate-800/20">
                       <td className="py-3.5 px-5">
-                        <span className="font-bold block">{sup.name}</span>
+                        <div className="flex items-center space-x-2">
+                          <span className="font-bold block">{sup.name}</span>
+                          {(sup.khataId || sup.code) && (
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-mono font-bold bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20">
+                              {sup.khataId || sup.code}
+                            </span>
+                          )}
+                        </div>
                         <span className="text-[10px] text-slate-500">{sup.address}</span>
                       </td>
                       <td className="py-3.5 px-5 font-semibold text-slate-700 dark:text-slate-300">{sup.phone}</td>
@@ -2451,9 +2653,20 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
                           <button onClick={() => openModal('supplier', 'edit', sup)} className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-700 dark:text-slate-300">
                             <Pencil size={14} />
                           </button>
-                          <button onClick={() => handleDelete('supplier', sup.id || sup._id, sup.name)} className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400">
-                            <Trash size={14} />
-                          </button>
+                          {isSupplierLinked(sup) ? (
+                            <button 
+                              type="button"
+                              onClick={() => showToast(`Cannot delete "${sup.name}": Supplier is linked to active or historical records (stock arrivals, payments, or ledger transactions).`, 'error')} 
+                              title="Linked to mandi data - Deletion protected" 
+                              className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800/60 text-slate-400 dark:text-slate-500 hover:text-amber-500 hover:bg-amber-500/10 transition-colors"
+                            >
+                              <Lock size={14} />
+                            </button>
+                          ) : (
+                            <button onClick={() => handleDelete('supplier', sup.id || sup._id, sup.name)} className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400">
+                              <Trash size={14} />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -2511,7 +2724,14 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
                   {filterAndPaginate(customers).paginated.map(cust => (
                     <tr key={cust.id || cust._id} className="hover:bg-slate-800/20">
                       <td className="py-3.5 px-5">
-                        <span className="font-bold block">{cust.name}</span>
+                        <div className="flex items-center space-x-2">
+                          <span className="font-bold block">{cust.name}</span>
+                          {(cust.khataId || cust.code) && (
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-mono font-bold bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
+                              {cust.khataId || cust.code}
+                            </span>
+                          )}
+                        </div>
                         {cust.address && <span className="text-[10px] text-slate-500 block">{cust.address}</span>}
                         {cust.referenceBy && <span className="text-[10px] text-indigo-500 dark:text-indigo-400 font-bold block">Ref: {cust.referenceBy}</span>}
                       </td>
@@ -2530,9 +2750,20 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
                           <button onClick={() => openModal('customer', 'edit', cust)} className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-700 dark:text-slate-300">
                             <Pencil size={14} />
                           </button>
-                          <button onClick={() => handleDelete('customer', cust.id || cust._id, cust.name)} className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400">
-                            <Trash size={14} />
-                          </button>
+                          {isCustomerLinked(cust) ? (
+                            <button 
+                              type="button"
+                              onClick={() => showToast(`Cannot delete "${cust.name}": Customer is linked to active or historical records (sales invoices, payments, or ledger transactions).`, 'error')} 
+                              title="Linked to mandi data - Deletion protected" 
+                              className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800/60 text-slate-400 dark:text-slate-500 hover:text-amber-500 hover:bg-amber-500/10 transition-colors"
+                            >
+                              <Lock size={14} />
+                            </button>
+                          ) : (
+                            <button onClick={() => handleDelete('customer', cust.id || cust._id, cust.name)} className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400">
+                              <Trash size={14} />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -2558,34 +2789,72 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
       {/* ----------------- TAB: STOCK ----------------- */}
       {tab === 'stock' && (
         <div className="space-y-6">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <h3 className="text-lg font-black uppercase tracking-wider">Supplies Inventory Log (Purchase)</h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400">Record stock shipments supplied by different farmers/suppliers</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Record and track consignment lots, produce arrivals, sales dispatches, and customer returns restocked into inventory</p>
             </div>
             <button 
               onClick={() => openModal('stock', 'add')}
-              className="flex items-center space-x-2 bg-[#4F46E5] hover:bg-[#4F46E5] text-white font-bold text-xs px-4 py-2.5 rounded-xl transition-all shadow-md shadow-indigo-500/10"
+              className="flex items-center space-x-2 bg-[#4F46E5] hover:bg-[#4338CA] text-white font-bold text-xs px-4 py-2.5 rounded-xl transition-all shadow-md shadow-indigo-500/10 cursor-pointer"
             >
               <Plus size={16} />
-              <span>RECORD NEW STOCK ENTRY</span>
+              <span>RECORD NEW STOCK ARRIVAL</span>
             </button>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="flex items-center px-4 py-3 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-200 dark:border-slate-800/80">
-              <Search size={16} className="text-slate-500 dark:text-slate-400 mr-2" />
+          {/* Top Summary Metrics Bar */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800/80 shadow-xs">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Total Lots</div>
+              <div className="text-lg font-black text-slate-800 dark:text-white mt-1">{stockSummary.totalLots}</div>
+              <div className="text-[10px] text-slate-400 mt-0.5">Consignments</div>
+            </div>
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800/80 shadow-xs">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-indigo-400">Arrived Stock</div>
+              <div className="text-lg font-black text-indigo-500 dark:text-indigo-400 mt-1">{stockSummary.totalArrived.toLocaleString()}</div>
+              <div className="text-[10px] text-slate-400 mt-0.5">Total received</div>
+            </div>
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800/80 shadow-xs">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Gross Sold</div>
+              <div className="text-lg font-black text-blue-500 dark:text-blue-400 mt-1">{stockSummary.totalSold.toLocaleString()}</div>
+              <div className="text-[10px] text-slate-400 mt-0.5">Sales tickets</div>
+            </div>
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-[#1E293B] border border-amber-200/50 dark:border-amber-900/30 bg-amber-50/30 dark:bg-amber-950/10 shadow-xs">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-amber-500 dark:text-amber-400 flex items-center gap-1">
+                <RotateCcw size={11} />
+                <span>Returned Qty</span>
+              </div>
+              <div className="text-lg font-black text-amber-600 dark:text-amber-400 mt-1">{stockSummary.totalReturned.toLocaleString()}</div>
+              <div className="text-[10px] text-amber-600/80 dark:text-amber-400/80 mt-0.5">Restocked</div>
+            </div>
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-[#1E293B] border border-emerald-200/50 dark:border-emerald-900/30 bg-emerald-50/30 dark:bg-emerald-950/10 shadow-xs">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-500 dark:text-emerald-400">Remaining Stock</div>
+              <div className="text-lg font-black text-emerald-600 dark:text-emerald-400 mt-1">{stockSummary.totalRemaining.toLocaleString()}</div>
+              <div className="text-[10px] text-emerald-600/80 dark:text-emerald-400/80 mt-0.5">In warehouse</div>
+            </div>
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800/80 shadow-xs">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-rose-400">Total Value</div>
+              <div className="text-lg font-black text-rose-500 dark:text-rose-400 mt-1">Rs. {stockSummary.totalCreditedAmount.toLocaleString()}</div>
+              <div className="text-[10px] text-slate-400 mt-0.5">Net turnover</div>
+            </div>
+          </div>
+
+          {/* Search & Filter Bar */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+            <div className="flex items-center px-4 py-3 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800/80">
+              <Search size={16} className="text-slate-500 dark:text-slate-400 mr-2 shrink-0" />
               <input 
                 type="text" 
-                placeholder="Search supplies..."
+                placeholder="Search by Lot #, supplier, produce..."
                 value={searchTerm}
                 onChange={e => setSearchTerm(e.target.value)}
                 className="bg-transparent border-0 outline-none text-xs w-full placeholder:text-slate-500"
               />
             </div>
 
-            <div className="flex items-center px-4 py-3 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-200 dark:border-slate-800/80">
-              <Filter size={16} className="text-slate-500 dark:text-slate-400 mr-2" />
+            <div className="flex items-center px-4 py-3 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800/80">
+              <Filter size={16} className="text-slate-500 dark:text-slate-400 mr-2 shrink-0" />
               <select 
                 value={filterSupplier} 
                 onChange={e => setFilterSupplier(e.target.value)}
@@ -2596,8 +2865,34 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
               </select>
             </div>
 
-            <div className="flex items-center px-4 py-3 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-200 dark:border-slate-800/80">
-              <Calendar size={16} className="text-slate-500 dark:text-slate-400 mr-2" />
+            <div className="flex items-center px-4 py-3 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800/80">
+              <Tag size={16} className="text-slate-500 dark:text-slate-400 mr-2 shrink-0" />
+              <select 
+                value={filterProduct} 
+                onChange={e => setFilterProduct(e.target.value)}
+                className="bg-transparent border-0 outline-none text-xs w-full"
+              >
+                <option value="">All Products</option>
+                {safeProducts.map(p => <option key={p.id || p._id} value={p.id || p._id}>{p.name}</option>)}
+              </select>
+            </div>
+
+            <div className="flex items-center px-4 py-3 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800/80">
+              <Activity size={16} className="text-slate-500 dark:text-slate-400 mr-2 shrink-0" />
+              <select 
+                value={filterStockStatus} 
+                onChange={e => setFilterStockStatus(e.target.value)}
+                className="bg-transparent border-0 outline-none text-xs w-full"
+              >
+                <option value="">All Statuses</option>
+                <option value="In-Stock">In-Stock (Available)</option>
+                <option value="Partially Sold">Partially Sold</option>
+                <option value="Depleted">Depleted (Zero Balance)</option>
+              </select>
+            </div>
+
+            <div className="flex items-center px-4 py-3 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800/80">
+              <Calendar size={16} className="text-slate-500 dark:text-slate-400 mr-2 shrink-0" />
               <input 
                 type="date" 
                 value={filterDate} 
@@ -2607,50 +2902,155 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
             </div>
           </div>
 
-          {/* Stock Log List */}
-          <div className="bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-200 dark:border-slate-800/80 rounded-2xl overflow-hidden">
+          {/* Stock Log Table */}
+          <div className="bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800/80 rounded-2xl overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse">
                 <thead>
-                  <tr className="border-b border-slate-200 dark:border-slate-200 dark:border-slate-800/80 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase">
-                    <th className="py-4 px-5">Date</th>
-                    <th className="py-4 px-5">Supplier</th>
-                    <th className="py-4 px-5">Product Name</th>
+                  <tr className="border-b border-slate-200 dark:border-slate-800/80 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider bg-slate-50/50 dark:bg-slate-900/40">
+                    <th className="py-4 px-5">Lot # & Date</th>
+                    <th className="py-4 px-5">Supplier / Grower</th>
+                    <th className="py-4 px-5">Commodity</th>
                     <th className="py-4 px-5 text-right">Arrived Qty</th>
+                    <th className="py-4 px-5 text-right">Sold Qty</th>
+                    <th className="py-4 px-5 text-right">Returned Qty</th>
                     <th className="py-4 px-5 text-right">Remaining Qty</th>
-                    <th className="py-4 px-5 text-right">Avg Sale Rate</th>
+                    <th className="py-4 px-5 text-right">Avg Realized Rate</th>
                     <th className="py-4 px-5 text-right">Total Credited</th>
+                    <th className="py-4 px-5 text-center">Status</th>
                     <th className="py-4 px-5 text-right">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-200 dark:divide-slate-800/50 text-xs">
-                  {filterAndPaginate(stockEntries).paginated.map(entry => {
-                    const rem = entry.remainingQuantity !== undefined ? entry.remainingQuantity : entry.quantity;
-                    return (
-                      <tr key={entry.id || entry._id} className="hover:bg-slate-800/20">
-                        <td className="py-3.5 px-5 font-bold text-slate-700 dark:text-slate-300">{entry.date}</td>
-                        <td className="py-3.5 px-5 font-semibold">{entry.supplierName}</td>
-                        <td className="py-3.5 px-5">{entry.productName}</td>
-                        <td className="py-3.5 px-5 text-right font-bold text-indigo-400">{entry.quantity}</td>
-                        <td className="py-3.5 px-5 text-right font-bold text-emerald-400">{rem}</td>
-                        <td className="py-3.5 px-5 text-right">Rs. {entry.purchaseRate || 0}</td>
-                        <td className="py-3.5 px-5 text-right font-black text-rose-400">Rs. {(entry.totalAmount || 0).toLocaleString()}</td>
-                        <td className="py-3.5 px-5 text-right">
-                          <div className="flex items-center justify-end space-x-2">
-                            <button onClick={() => openModal('stock', 'edit', entry)} className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-700 dark:text-slate-300">
-                              <Pencil size={13} />
-                            </button>
-                            <button onClick={() => handleDelete('stock', entry.id || entry._id, `${entry.quantity} of ${entry.productName}`)} className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400">
-                              <Trash size={13} />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50 text-xs">
+                  {(() => {
+                    const { paginated, totalPages } = filterAndPaginate(enrichedStockEntries);
+                    if (paginated.length === 0) {
+                      return (
+                        <tr>
+                          <td colSpan={11} className="py-12 text-center text-slate-400">
+                            No stock arrival supplies found matching current filters.
+                          </td>
+                        </tr>
+                      );
+                    }
+                    return paginated.map(entry => {
+                      const hasReturns = (entry.returnedProduceQty || 0) > 0;
+                      return (
+                        <tr key={entry.id || entry._id} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/30 transition-colors">
+                          <td className="py-3.5 px-5">
+                            <div className="flex items-center space-x-2">
+                              <span className="font-mono font-black text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 px-2 py-0.5 rounded text-[11px] border border-indigo-200/40 dark:border-indigo-800/40">
+                                #{entry.lotNumber}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">{entry.date}</div>
+                            {entry.vehicleNumber && (
+                              <div className="text-[10px] text-slate-400 flex items-center gap-1 mt-0.5">
+                                <Truck size={10} />
+                                <span>{entry.vehicleNumber}</span>
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-3.5 px-5">
+                            <div className="font-bold text-slate-900 dark:text-white">{entry.supplierName}</div>
+                            {entry.supplierPhone && <div className="text-[11px] text-slate-400">{entry.supplierPhone}</div>}
+                          </td>
+                          <td className="py-3.5 px-5">
+                            <div className="font-semibold text-slate-800 dark:text-slate-200">{entry.productName}</div>
+                            <span className="inline-block text-[10px] bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded text-slate-500 dark:text-slate-400 mt-0.5">
+                              {entry.unit || 'Crates'}
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-5 text-right font-bold text-indigo-600 dark:text-indigo-400">
+                            {entry.arrivedQty} <span className="text-[10px] font-normal text-slate-400">{entry.unit || 'Crates'}</span>
+                          </td>
+                          <td className="py-3.5 px-5 text-right font-semibold text-blue-600 dark:text-blue-400">
+                            {entry.soldQty} <span className="text-[10px] font-normal text-slate-400">{entry.unit || 'Crates'}</span>
+                          </td>
+                          <td className="py-3.5 px-5 text-right">
+                            {hasReturns ? (
+                              <span className="inline-flex items-center gap-1 font-bold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 px-2 py-0.5 rounded text-xs border border-amber-200/50 dark:border-amber-800/40">
+                                <RotateCcw size={10} />
+                                {entry.returnedProduceQty} {entry.unit || 'Crates'}
+                              </span>
+                            ) : (
+                              <span className="text-slate-400">0</span>
+                            )}
+                          </td>
+                          <td className="py-3.5 px-5 text-right font-black text-emerald-600 dark:text-emerald-400 text-sm">
+                            {entry.remainingQty} <span className="text-[10px] font-normal text-slate-400">{entry.unit || 'Crates'}</span>
+                          </td>
+                          <td className="py-3.5 px-5 text-right font-semibold text-slate-700 dark:text-slate-300">
+                            Rs. {entry.avgRate || 0}
+                          </td>
+                          <td className="py-3.5 px-5 text-right font-black text-rose-600 dark:text-rose-400">
+                            Rs. {(entry.totalAmount || 0).toLocaleString()}
+                          </td>
+                          <td className="py-3.5 px-5 text-center">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                              entry.status === 'Depleted'
+                                ? 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+                                : entry.status === 'Partially Sold'
+                                ? 'bg-indigo-50 text-indigo-600 dark:bg-indigo-950/40 dark:text-indigo-400 border border-indigo-200/40 dark:border-indigo-800/40'
+                                : 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400 border border-emerald-200/40 dark:border-emerald-800/40'
+                            }`}>
+                              {entry.status}
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-5 text-right">
+                            <div className="flex items-center justify-end space-x-1.5">
+                              <button 
+                                onClick={() => openModal('stock', 'edit', entry)} 
+                                title="Edit Lot Arrival"
+                                className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-colors cursor-pointer"
+                              >
+                                <Pencil size={13} />
+                              </button>
+                              <button 
+                                onClick={() => handleDelete('stock', entry.id || entry._id, `Lot #${entry.lotNumber} (${entry.arrivedQty} ${entry.unit || 'units'} of ${entry.productName})`)} 
+                                title="Delete Lot Arrival"
+                                className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-500 dark:text-red-400 transition-colors cursor-pointer"
+                              >
+                                <Trash size={13} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    });
+                  })()}
                 </tbody>
               </table>
             </div>
+
+            {/* Pagination Controls */}
+            {(() => {
+              const { totalPages, totalItems } = filterAndPaginate(enrichedStockEntries);
+              if (totalPages <= 1) return null;
+              return (
+                <div className="flex items-center justify-between px-5 py-3 border-t border-slate-200 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-900/30 text-xs">
+                  <div className="text-slate-500 dark:text-slate-400">
+                    Showing Page <span className="font-bold text-slate-800 dark:text-white">{currentPage}</span> of <span className="font-bold text-slate-800 dark:text-white">{totalPages}</span> ({totalItems} total supply lots)
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      disabled={currentPage === 1}
+                      onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                      className="px-3 py-1.5 rounded-lg bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 disabled:opacity-40 font-medium hover:bg-slate-50 cursor-pointer"
+                    >
+                      Previous
+                    </button>
+                    <button
+                      disabled={currentPage >= totalPages}
+                      onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                      className="px-3 py-1.5 rounded-lg bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 disabled:opacity-40 font-medium hover:bg-slate-50 cursor-pointer"
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}
@@ -3325,12 +3725,33 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
                 <button onClick={closeModal} className="text-slate-500 dark:text-slate-400 hover:text-white"><X size={18} /></button>
               </div>
 
+              <DialogAlert alert={modalAlert} onDismiss={() => setModalAlert(null)} />
+
               <form onSubmit={handleSubmit} className="space-y-4 text-xs">
                 
                 <div className="space-y-1">
                   <label className="text-slate-500 dark:text-slate-400 font-bold block uppercase tracking-wider">Name</label>
                   <input required type="text" name="name" value={formData.name || ''} onChange={handleFormChange} className="w-full bg-[#F8FAFC] dark:bg-[#0F172A] border border-slate-200 dark:border-slate-200 dark:border-slate-800/80 rounded-xl px-4 py-3 outline-none focus:border-[#4F46E5]" />
                 </div>
+
+                {(modalType === 'supplier' || modalType === 'customer') && (
+                  <div className="space-y-1">
+                    <label className="text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider flex items-center justify-between">
+                      <span>Khata ID (Unique / Auto-Generated)</span>
+                      <span className="text-[10px] text-emerald-500 font-semibold tracking-normal normal-case">
+                        Used for login & ledgers
+                      </span>
+                    </label>
+                    <input
+                      type="text"
+                      name="khataId"
+                      value={formData.khataId || ''}
+                      onChange={(e) => setFormData(prev => ({ ...prev, khataId: e.target.value.toUpperCase() }))}
+                      placeholder={modalType === 'supplier' ? 'e.g. RT-S-1' : 'e.g. RT-C-1'}
+                      className="w-full bg-[#F8FAFC] dark:bg-[#0F172A] border border-slate-200 dark:border-slate-800/80 rounded-xl px-4 py-3 outline-none focus:border-[#4F46E5] font-mono font-bold text-slate-800 dark:text-slate-100"
+                    />
+                  </div>
+                )}
 
                 {modalType !== 'product' && (
                   <>
@@ -3486,6 +3907,8 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
                 <button onClick={closeModal} className="text-slate-500 dark:text-slate-400 hover:text-white"><X size={18} /></button>
               </div>
 
+              <DialogAlert alert={modalAlert} onDismiss={() => setModalAlert(null)} />
+
               <form onSubmit={handleSubmit} className="space-y-4 text-xs">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-1">
@@ -3513,6 +3936,17 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
                   <div className="space-y-1">
                     <label className="text-slate-500 dark:text-slate-400 font-bold uppercase block">Voucher Date</label>
                     <input required type="date" name="date" value={formData.date || ''} onChange={handleFormChange} className="w-full bg-[#F8FAFC] dark:bg-[#0F172A] border border-slate-200 dark:border-slate-800/80 rounded-xl px-4 py-3 outline-none" />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-slate-500 dark:text-slate-400 font-bold uppercase block">Vehicle / Truck No. (Optional)</label>
+                    <input type="text" name="vehicleNumber" value={formData.vehicleNumber || ''} onChange={handleFormChange} placeholder="e.g. LES-4921" className="w-full bg-[#F8FAFC] dark:bg-[#0F172A] border border-slate-200 dark:border-slate-800/80 rounded-xl px-4 py-3 outline-none uppercase font-mono" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-slate-500 dark:text-slate-400 font-bold uppercase block">Lot Reference # (Optional)</label>
+                    <input type="text" name="lotNumber" value={formData.lotNumber || ''} onChange={handleFormChange} placeholder="Auto-assigned if empty" className="w-full bg-[#F8FAFC] dark:bg-[#0F172A] border border-slate-200 dark:border-slate-800/80 rounded-xl px-4 py-3 outline-none uppercase font-mono" />
                   </div>
                 </div>
 
@@ -3547,6 +3981,8 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
                 <h3 className="text-base font-black uppercase tracking-wider">RECORD BATCH CONSIGNMENT SALE</h3>
                 <button onClick={closeModal} className="text-slate-500 dark:text-slate-400 hover:text-white"><X size={18} /></button>
               </div>
+
+              <DialogAlert alert={modalAlert} onDismiss={() => setModalAlert(null)} />
 
               <form onSubmit={handleSubmit} className="space-y-4 text-xs">
                 <div className="space-y-1">
@@ -3724,6 +4160,8 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
                 <button onClick={closeModal} className="text-slate-500 dark:text-slate-400 hover:text-white"><X size={18} /></button>
               </div>
 
+              <DialogAlert alert={modalAlert} onDismiss={() => setModalAlert(null)} />
+
               <PaymentForm
                 formData={formData}
                 onChange={handleFormChange}
@@ -3745,6 +4183,8 @@ export default function AdminDashboard({ tab, setCurrentTab }) {
                 <h3 className="text-base font-black uppercase tracking-wider">{modalMode === 'add' ? 'Record Mandi Operating Expense' : 'Update Operating Expense Record'}</h3>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400">Log expenditures for brokerage activities and general operations</p>
               </div>
+
+              <DialogAlert alert={modalAlert} onDismiss={() => setModalAlert(null)} />
 
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">

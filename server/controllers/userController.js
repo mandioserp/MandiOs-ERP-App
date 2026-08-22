@@ -1,6 +1,225 @@
 import bcryptjs from 'bcryptjs';
-import { User, Customer, Supplier, Employee, AuditLog, Ledger, Payment, StockEntry, Sale } from '../models/index.js';
-import { buildTenantQuery, getTenantId } from '../utils/tenant.js';
+import { User, Customer, Supplier, Employee, AuditLog, Ledger, Payment, StockEntry, Sale, Truck, ReturnRecord } from '../models/index.js';
+import { CommissionRule } from '../models/settings.js';
+import { assertTenantOwnership, buildTenantQuery, getTenantId } from '../utils/tenant.js';
+import { peekNextKhataId, getNextKhataId, isKhataIdUnique, syncCounterIfNeeded } from '../utils/counter.js';
+
+// --- DATA INTEGRITY LINKED DATA HELPERS ---
+
+/**
+ * Checks whether a Supplier has any linked data anywhere in the application
+ * (Stock lots, sales realizations, payments, khata ledgers, truck logistics, returns, commission rules, or non-zero balances).
+ */
+export async function getSupplierLinkedData(supplierId, req) {
+  const sIdStr = String(supplierId);
+  const tenantQuery = buildTenantQuery(req);
+
+  const [
+    allStock,
+    allSales,
+    allPayments,
+    allLedgers,
+    allTrucks,
+    allReturns,
+    allRules,
+    supplier
+  ] = await Promise.all([
+    StockEntry.find(tenantQuery),
+    Sale.find(tenantQuery),
+    Payment.find(tenantQuery),
+    Ledger.find(tenantQuery),
+    Truck.find(tenantQuery),
+    ReturnRecord.find(tenantQuery),
+    CommissionRule.find(tenantQuery),
+    Supplier.findById(supplierId)
+  ]);
+
+  const supplierIds = new Set([sIdStr]);
+  if (supplier) {
+    if (supplier.id) supplierIds.add(String(supplier.id));
+    if (supplier._id) supplierIds.add(String(supplier._id));
+    if (supplier.khataId) supplierIds.add(String(supplier.khataId));
+  }
+
+  // 1. Stock / Lot arrivals
+  const linkedStock = allStock.filter(st => 
+    supplierIds.has(String(st.supplierId)) || 
+    (supplier && st.supplierName && st.supplierName.trim().toLowerCase() === supplier.name.trim().toLowerCase())
+  );
+  const stockIds = new Set(linkedStock.map(st => String(st.id || st._id)));
+
+  // 2. Sales linked to this supplier's stock lots
+  const linkedSales = allSales.filter(s => s.stockEntryId && stockIds.has(String(s.stockEntryId)));
+
+  // 3. Payments
+  const linkedPayments = allPayments.filter(p => 
+    (supplierIds.has(String(p.partyId)) || (supplier && p.partyName && p.partyName.trim().toLowerCase() === supplier.name.trim().toLowerCase())) && 
+    p.partyType === 'Supplier'
+  );
+
+  // 4. Ledger entries
+  const linkedLedgers = allLedgers.filter(l => 
+    supplierIds.has(String(l.partyId)) && 
+    l.partyType === 'Supplier'
+  );
+
+  // 5. Trucks / Transport Logistics
+  const linkedTrucks = allTrucks.filter(t => 
+    supplierIds.has(String(t.supplierId)) || 
+    (supplier && t.supplierName && t.supplierName.trim().toLowerCase() === supplier.name.trim().toLowerCase())
+  );
+
+  // 6. Produce / Crate Returns
+  const linkedReturns = allReturns.filter(r => 
+    supplierIds.has(String(r.supplierId)) || 
+    (supplier && r.supplierName && r.supplierName.trim().toLowerCase() === supplier.name.trim().toLowerCase()) ||
+    (r.stockEntryId && stockIds.has(String(r.stockEntryId)))
+  );
+
+  // 7. Commission Rules
+  const linkedRules = allRules.filter(r => 
+    supplierIds.has(String(r.supplierId)) ||
+    (supplier && r.supplierName && r.supplierName.trim().toLowerCase() === supplier.name.trim().toLowerCase())
+  );
+
+  // 8. Financial Activity / Balances
+  const hasBalance = supplier && Math.abs(Number(supplier.currentBalance) || 0) > 0.01;
+  const hasRemainingBal = supplier && Math.abs(Number(supplier.remainingBalance) || 0) > 0.01;
+  const hasSuppliedVolume = supplier && (Number(supplier.totalSupplied) || 0) > 0;
+  const hasPaidVolume = supplier && (Number(supplier.totalPaid) || 0) > 0;
+
+  const reasons = [];
+  if (linkedStock.length > 0) reasons.push(`${linkedStock.length} stock lot arrival(s)`);
+  if (linkedSales.length > 0) reasons.push(`${linkedSales.length} linked lot sales`);
+  if (linkedPayments.length > 0) reasons.push(`${linkedPayments.length} payment voucher(s)`);
+  if (linkedLedgers.length > 0) reasons.push(`${linkedLedgers.length} khata ledger transaction(s)`);
+  if (linkedTrucks.length > 0) reasons.push(`${linkedTrucks.length} truck transport log(s)`);
+  if (linkedReturns.length > 0) reasons.push(`${linkedReturns.length} return record(s)`);
+  if (linkedRules.length > 0) reasons.push(`${linkedRules.length} commission rule(s)`);
+  if (hasBalance) {
+    const balVal = Number(supplier.currentBalance);
+    reasons.push(`outstanding balance (Rs. ${Math.abs(balVal).toLocaleString()} ${balVal < 0 ? 'Payable' : 'Receivable'})`);
+  } else if (hasRemainingBal) {
+    reasons.push(`remaining khata balance of Rs. ${Math.abs(Number(supplier.remainingBalance)).toLocaleString()}`);
+  } else if (hasSuppliedVolume || hasPaidVolume) {
+    reasons.push(`historical trade activity (Rs. ${(Number(supplier?.totalSupplied) || 0).toLocaleString()} supplied)`);
+  }
+
+  const hasLinkedData = reasons.length > 0;
+
+  return {
+    hasLinkedData,
+    reasons,
+    counts: {
+      stockCount: linkedStock.length,
+      salesCount: linkedSales.length,
+      paymentCount: linkedPayments.length,
+      ledgerCount: linkedLedgers.length,
+      truckCount: linkedTrucks.length,
+      returnCount: linkedReturns.length,
+      ruleCount: linkedRules.length,
+      hasFinancialActivity: hasBalance || hasRemainingBal || hasSuppliedVolume || hasPaidVolume
+    }
+  };
+}
+
+/**
+ * Checks whether a Customer has any linked data anywhere in the application
+ * (Sales invoices, payments, khata ledgers, produce/crate returns, commission rules, or non-zero balances).
+ */
+export async function getCustomerLinkedData(customerId, req) {
+  const cIdStr = String(customerId);
+  const tenantQuery = buildTenantQuery(req);
+
+  const [
+    allSales,
+    allPayments,
+    allLedgers,
+    allReturns,
+    allRules,
+    customer
+  ] = await Promise.all([
+    Sale.find(tenantQuery),
+    Payment.find(tenantQuery),
+    Ledger.find(tenantQuery),
+    ReturnRecord.find(tenantQuery),
+    CommissionRule.find(tenantQuery),
+    Customer.findById(customerId)
+  ]);
+
+  const customerIds = new Set([cIdStr]);
+  if (customer) {
+    if (customer.id) customerIds.add(String(customer.id));
+    if (customer._id) customerIds.add(String(customer._id));
+    if (customer.khataId) customerIds.add(String(customer.khataId));
+  }
+
+  // 1. Sales / Invoices
+  const linkedSales = allSales.filter(s => 
+    customerIds.has(String(s.customerId)) || 
+    (customer && s.customerName && s.customerName.trim().toLowerCase() === customer.name.trim().toLowerCase())
+  );
+
+  // 2. Payments
+  const linkedPayments = allPayments.filter(p => 
+    (customerIds.has(String(p.partyId)) || (customer && p.partyName && p.partyName.trim().toLowerCase() === customer.name.trim().toLowerCase())) && 
+    p.partyType === 'Customer'
+  );
+
+  // 3. Ledger entries
+  const linkedLedgers = allLedgers.filter(l => 
+    customerIds.has(String(l.partyId)) && 
+    l.partyType === 'Customer'
+  );
+
+  // 4. Produce / Crate Returns
+  const linkedReturns = allReturns.filter(r => 
+    customerIds.has(String(r.customerId)) || 
+    (customer && r.customerName && r.customerName.trim().toLowerCase() === customer.name.trim().toLowerCase())
+  );
+
+  // 5. Commission Rules
+  const linkedRules = allRules.filter(r => 
+    customerIds.has(String(r.customerId)) ||
+    (customer && r.customerName && r.customerName.trim().toLowerCase() === customer.name.trim().toLowerCase())
+  );
+
+  // 6. Financial Activity / Balances
+  const hasBalance = customer && Math.abs(Number(customer.currentBalance) || 0) > 0.01;
+  const hasRemainingBal = customer && Math.abs(Number(customer.remainingBalance) || 0) > 0.01;
+  const hasPurchasedVolume = customer && (Number(customer.totalPurchases) || 0) > 0;
+  const hasPaidVolume = customer && (Number(customer.totalPaid) || 0) > 0;
+
+  const reasons = [];
+  if (linkedSales.length > 0) reasons.push(`${linkedSales.length} sale invoice(s)`);
+  if (linkedPayments.length > 0) reasons.push(`${linkedPayments.length} payment voucher(s)`);
+  if (linkedLedgers.length > 0) reasons.push(`${linkedLedgers.length} khata ledger transaction(s)`);
+  if (linkedReturns.length > 0) reasons.push(`${linkedReturns.length} produce/crate return(s)`);
+  if (linkedRules.length > 0) reasons.push(`${linkedRules.length} commission rule(s)`);
+  if (hasBalance) {
+    const balVal = Number(customer.currentBalance);
+    reasons.push(`outstanding balance (Rs. ${Math.abs(balVal).toLocaleString()} ${balVal > 0 ? 'Receivable' : 'Credit'})`);
+  } else if (hasRemainingBal) {
+    reasons.push(`remaining khata balance of Rs. ${Math.abs(Number(customer.remainingBalance)).toLocaleString()}`);
+  } else if (hasPurchasedVolume || hasPaidVolume) {
+    reasons.push(`historical purchase activity (Rs. ${(Number(customer?.totalPurchases) || 0).toLocaleString()} purchased)`);
+  }
+
+  const hasLinkedData = reasons.length > 0;
+
+  return {
+    hasLinkedData,
+    reasons,
+    counts: {
+      salesCount: linkedSales.length,
+      paymentCount: linkedPayments.length,
+      ledgerCount: linkedLedgers.length,
+      returnCount: linkedReturns.length,
+      ruleCount: linkedRules.length,
+      hasFinancialActivity: hasBalance || hasRemainingBal || hasPurchasedVolume || hasPaidVolume
+    }
+  };
+}
 
 // --- CLERKS ---
 export async function getClerks(req, res) {
@@ -69,6 +288,7 @@ export async function editClerk(req, res) {
     if (!clerk || clerk.role !== 'Clerk') {
       return res.status(404).json({ error: 'Clerk not found.' });
     }
+    if (!assertTenantOwnership(req, clerk)) return res.status(404).json({ error: 'Clerk not found.' });
 
     const updateData = { name, phone, address, status };
     if (email !== undefined) {
@@ -113,6 +333,7 @@ export async function deleteClerk(req, res) {
     if (!clerk || (clerk.role !== 'Clerk' && clerk.role?.toLowerCase() !== 'clerk')) {
       return res.status(404).json({ error: 'Clerk not found.' });
     }
+    if (!assertTenantOwnership(req, clerk)) return res.status(404).json({ error: 'Clerk not found.' });
 
     const tenantId = getTenantId(req) || clerk.tenantId || 'tenant_default_001';
     const now = new Date();
@@ -155,13 +376,39 @@ export async function getSuppliers(req, res) {
   }
 }
 
+// Preview Next Khata ID
+export async function getNextSupplierKhataId(req, res) {
+  try {
+    const tenantId = getTenantId(req) || 'tenant_default_001';
+    const preview = await peekNextKhataId(tenantId, 'Supplier');
+    res.json(preview);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to generate next Supplier Khata ID preview.' });
+  }
+}
+
 export async function addSupplier(req, res) {
   try {
-    const { name, email, password, phone, address, cnic, currentBalance } = req.body;
+    const { name, email, password, phone, address, cnic, currentBalance, khataId: customKhataId } = req.body;
     const tenantId = getTenantId(req) || 'tenant_default_001';
 
     if (!name || !phone) {
       return res.status(400).json({ error: 'Please provide supplier name and phone number.' });
+    }
+
+    // Determine Khata ID (manual or atomic auto-generation)
+    let finalKhataId = '';
+    if (customKhataId && customKhataId.trim() !== '') {
+      finalKhataId = customKhataId.trim().toUpperCase();
+      const isUnique = await isKhataIdUnique(tenantId, 'Supplier', finalKhataId);
+      if (!isUnique) {
+        return res.status(400).json({ error: `Khata ID "${finalKhataId}" is already in use for another supplier in this business.` });
+      }
+      await syncCounterIfNeeded(tenantId, 'Supplier', finalKhataId);
+    } else {
+      const generated = await getNextKhataId(tenantId, 'Supplier');
+      finalKhataId = generated.khataId;
     }
 
     if (email && email.trim()) {
@@ -182,6 +429,7 @@ export async function addSupplier(req, res) {
       name,
       phone,
       address,
+      khataId: finalKhataId,
       role: 'Supplier',
       status: 'Active',
     };
@@ -200,6 +448,7 @@ export async function addSupplier(req, res) {
     const supplier = await Supplier.create({
       tenantId,
       userId: user ? (user.id || user._id) : null,
+      khataId: finalKhataId,
       name,
       phone,
       address,
@@ -230,7 +479,7 @@ export async function addSupplier(req, res) {
       userName: req.user.name,
       userRole: req.user.role,
       action: 'ADD_SUPPLIER',
-      details: `Created supplier ${name}${email ? ` and linked account ${email}` : ''}.`,
+      details: `Created supplier ${name} (Khata ID: ${finalKhataId})${email ? ` and linked account ${email}` : ''}.`,
       timestamp: new Date().toISOString(),
     });
 
@@ -244,11 +493,29 @@ export async function addSupplier(req, res) {
 export async function editSupplier(req, res) {
   try {
     const { id } = req.params;
-    const { name, email, password, phone, address, cnic, currentBalance } = req.body;
+    const { name, email, password, phone, address, cnic, currentBalance, khataId: customKhataId } = req.body;
 
     const supplier = await Supplier.findById(id);
     if (!supplier) {
       return res.status(404).json({ error: 'Supplier not found.' });
+    }
+    if (!assertTenantOwnership(req, supplier)) return res.status(404).json({ error: 'Supplier not found.' });
+
+    const tenantId = getTenantId(req) || supplier.tenantId || 'tenant_default_001';
+    let updatedKhataId = supplier.khataId;
+    let khataIdChanged = false;
+
+    if (customKhataId !== undefined && customKhataId.trim() !== '') {
+      const cleanKhataId = customKhataId.trim().toUpperCase();
+      if (cleanKhataId !== (supplier.khataId || '')) {
+        const isUnique = await isKhataIdUnique(tenantId, 'Supplier', cleanKhataId, id);
+        if (!isUnique) {
+          return res.status(400).json({ error: `Khata ID "${cleanKhataId}" is already assigned to another supplier.` });
+        }
+        await syncCounterIfNeeded(tenantId, 'Supplier', cleanKhataId);
+        updatedKhataId = cleanKhataId;
+        khataIdChanged = true;
+      }
     }
 
     // Update supplier info
@@ -257,21 +524,23 @@ export async function editSupplier(req, res) {
       phone,
       address,
       cnic,
+      khataId: updatedKhataId,
       currentBalance: Number(currentBalance) !== undefined ? Number(currentBalance) : supplier.currentBalance,
       remainingBalance: Number(currentBalance) !== undefined ? Number(currentBalance) : supplier.remainingBalance,
     }, { new: true });
 
     // Update linked user info
     if (supplier.userId) {
-      const userUpdate = { name, phone, address };
+      const userUpdate = { name, phone, address, khataId: updatedKhataId };
       if (email !== undefined) {
         if (email && email.trim()) {
-          const duplicate = await User.findOne({ email: email.trim() });
+          const duplicate = await User.findOne({ email: email.trim().toLowerCase() });
           if (!duplicate || duplicate.id === supplier.userId || duplicate._id?.toString() === supplier.userId) {
-            userUpdate.email = email.trim();
+            userUpdate.email = email.trim().toLowerCase();
           }
         } else {
-          userUpdate.email = '';
+          userUpdate.email = undefined;
+          userUpdate.$unset = { email: "" };
         }
       }
       if (password && password.trim()) {
@@ -281,7 +550,9 @@ export async function editSupplier(req, res) {
       await User.findByIdAndUpdate(supplier.userId, userUpdate);
     }
 
-    const tenantId = getTenantId(req) || supplier.tenantId || 'tenant_default_001';
+    const auditDetails = khataIdChanged 
+      ? `Updated supplier profile ${name || supplier.name}. Changed Khata ID from "${supplier.khataId || 'None'}" to "${updatedKhataId}".`
+      : `Updated supplier profile details for ${name || supplier.name}.`;
 
     await AuditLog.create({
       tenantId,
@@ -289,7 +560,7 @@ export async function editSupplier(req, res) {
       userName: req.user.name,
       userRole: req.user.role,
       action: 'EDIT_SUPPLIER',
-      details: `Updated supplier profile details for ${name || supplier.name}.`,
+      details: auditDetails,
       timestamp: new Date().toISOString(),
     });
 
@@ -306,6 +577,16 @@ export async function deleteSupplier(req, res) {
     const supplier = await Supplier.findById(id);
     if (!supplier) {
       return res.status(404).json({ error: 'Supplier not found.' });
+    }
+
+    // Check if supplier has any linked data across the system
+    const linkedCheck = await getSupplierLinkedData(id, req);
+    if (linkedCheck.hasLinkedData) {
+      return res.status(400).json({ 
+        error: `Cannot delete supplier "${supplier.name}". This supplier has active or historical data linked in the system (${linkedCheck.reasons.join(', ')}). Deletion is blocked to ensure accounting and transactional data integrity.`,
+        linkedReasons: linkedCheck.reasons,
+        counts: linkedCheck.counts
+      });
     }
 
     const tenantId = getTenantId(req) || supplier.tenantId || 'tenant_default_001';
@@ -342,7 +623,7 @@ export async function deleteSupplier(req, res) {
       console.error('Audit log failed during delete supplier:', auditErr);
     }
 
-    res.json({ message: 'Supplier soft-deleted successfully.' });
+    res.json({ message: 'Supplier deleted successfully.' });
   } catch (err) {
     console.error('Error deleting supplier:', err);
     res.status(500).json({ error: err.message || 'Failed to delete supplier.' });
@@ -359,13 +640,39 @@ export async function getCustomers(req, res) {
   }
 }
 
+// Preview Next Customer Khata ID
+export async function getNextCustomerKhataId(req, res) {
+  try {
+    const tenantId = getTenantId(req) || 'tenant_default_001';
+    const preview = await peekNextKhataId(tenantId, 'Customer');
+    res.json(preview);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to generate next Customer Khata ID preview.' });
+  }
+}
+
 export async function addCustomer(req, res) {
   try {
-    const { name, email, password, phone, address, referenceBy, currentBalance } = req.body;
+    const { name, email, password, phone, address, referenceBy, currentBalance, khataId: customKhataId } = req.body;
     const tenantId = getTenantId(req) || 'tenant_default_001';
 
     if (!name || !phone) {
       return res.status(400).json({ error: 'Please provide customer name and phone number.' });
+    }
+
+    // Determine Khata ID (manual or atomic auto-generation)
+    let finalKhataId = '';
+    if (customKhataId && customKhataId.trim() !== '') {
+      finalKhataId = customKhataId.trim().toUpperCase();
+      const isUnique = await isKhataIdUnique(tenantId, 'Customer', finalKhataId);
+      if (!isUnique) {
+        return res.status(400).json({ error: `Khata ID "${finalKhataId}" is already in use for another customer in this business.` });
+      }
+      await syncCounterIfNeeded(tenantId, 'Customer', finalKhataId);
+    } else {
+      const generated = await getNextKhataId(tenantId, 'Customer');
+      finalKhataId = generated.khataId;
     }
 
     if (email && email.trim()) {
@@ -386,6 +693,7 @@ export async function addCustomer(req, res) {
       name,
       phone,
       address,
+      khataId: finalKhataId,
       role: 'Customer',
       status: 'Active',
     };
@@ -404,6 +712,7 @@ export async function addCustomer(req, res) {
     const customer = await Customer.create({
       tenantId,
       userId: user ? (user.id || user._id) : null,
+      khataId: finalKhataId,
       name,
       phone,
       address,
@@ -434,7 +743,7 @@ export async function addCustomer(req, res) {
       userName: req.user.name,
       userRole: req.user.role,
       action: 'ADD_CUSTOMER',
-      details: `Created customer ${name}${email ? ` and linked account ${email}` : ''}.`,
+      details: `Created customer ${name} (Khata ID: ${finalKhataId})${email ? ` and linked account ${email}` : ''}.`,
       timestamp: new Date().toISOString(),
     });
 
@@ -448,11 +757,29 @@ export async function addCustomer(req, res) {
 export async function editCustomer(req, res) {
   try {
     const { id } = req.params;
-    const { name, email, password, phone, address, referenceBy, currentBalance } = req.body;
+    const { name, email, password, phone, address, referenceBy, currentBalance, khataId: customKhataId } = req.body;
 
     const customer = await Customer.findById(id);
     if (!customer) {
       return res.status(404).json({ error: 'Customer not found.' });
+    }
+    if (!assertTenantOwnership(req, customer)) return res.status(404).json({ error: 'Customer not found.' });
+
+    const tenantId = getTenantId(req) || customer.tenantId || 'tenant_default_001';
+    let updatedKhataId = customer.khataId;
+    let khataIdChanged = false;
+
+    if (customKhataId !== undefined && customKhataId.trim() !== '') {
+      const cleanKhataId = customKhataId.trim().toUpperCase();
+      if (cleanKhataId !== (customer.khataId || '')) {
+        const isUnique = await isKhataIdUnique(tenantId, 'Customer', cleanKhataId, id);
+        if (!isUnique) {
+          return res.status(400).json({ error: `Khata ID "${cleanKhataId}" is already assigned to another customer.` });
+        }
+        await syncCounterIfNeeded(tenantId, 'Customer', cleanKhataId);
+        updatedKhataId = cleanKhataId;
+        khataIdChanged = true;
+      }
     }
 
     // Update customer info
@@ -460,6 +787,7 @@ export async function editCustomer(req, res) {
       name,
       phone,
       address,
+      khataId: updatedKhataId,
       referenceBy: referenceBy !== undefined ? referenceBy : customer.referenceBy,
       currentBalance: Number(currentBalance) !== undefined ? Number(currentBalance) : customer.currentBalance,
       remainingBalance: Number(currentBalance) !== undefined ? Number(currentBalance) : customer.remainingBalance,
@@ -467,15 +795,16 @@ export async function editCustomer(req, res) {
 
     // Update linked user
     if (customer.userId) {
-      const userUpdate = { name, phone, address };
+      const userUpdate = { name, phone, address, khataId: updatedKhataId };
       if (email !== undefined) {
         if (email && email.trim()) {
-          const duplicate = await User.findOne({ email: email.trim() });
+          const duplicate = await User.findOne({ email: email.trim().toLowerCase() });
           if (!duplicate || duplicate.id === customer.userId || duplicate._id?.toString() === customer.userId) {
-            userUpdate.email = email.trim();
+            userUpdate.email = email.trim().toLowerCase();
           }
         } else {
-          userUpdate.email = '';
+          userUpdate.email = undefined;
+          userUpdate.$unset = { email: "" };
         }
       }
       if (password && password.trim()) {
@@ -485,7 +814,9 @@ export async function editCustomer(req, res) {
       await User.findByIdAndUpdate(customer.userId, userUpdate);
     }
 
-    const tenantId = getTenantId(req) || customer.tenantId || 'tenant_default_001';
+    const auditDetails = khataIdChanged
+      ? `Updated customer profile ${name || customer.name}. Changed Khata ID from "${customer.khataId || 'None'}" to "${updatedKhataId}".`
+      : `Updated customer profile details for ${name || customer.name}.`;
 
     await AuditLog.create({
       tenantId,
@@ -493,7 +824,7 @@ export async function editCustomer(req, res) {
       userName: req.user.name,
       userRole: req.user.role,
       action: 'EDIT_CUSTOMER',
-      details: `Updated customer profile details for ${name || customer.name}.`,
+      details: auditDetails,
       timestamp: new Date().toISOString(),
     });
 
@@ -510,6 +841,16 @@ export async function deleteCustomer(req, res) {
     const customer = await Customer.findById(id);
     if (!customer) {
       return res.status(404).json({ error: 'Customer not found.' });
+    }
+
+    // Check if customer has any linked data across the system
+    const linkedCheck = await getCustomerLinkedData(id, req);
+    if (linkedCheck.hasLinkedData) {
+      return res.status(400).json({ 
+        error: `Cannot delete customer "${customer.name}". This customer has active or historical data linked in the system (${linkedCheck.reasons.join(', ')}). Deletion is blocked to ensure accounting and transactional data integrity.`,
+        linkedReasons: linkedCheck.reasons,
+        counts: linkedCheck.counts
+      });
     }
 
     const tenantId = getTenantId(req) || customer.tenantId || 'tenant_default_001';
@@ -544,7 +885,7 @@ export async function deleteCustomer(req, res) {
       console.error('Audit log failed during delete customer:', auditErr);
     }
 
-    res.json({ message: 'Customer soft-deleted successfully.' });
+    res.json({ message: 'Customer deleted successfully.' });
   } catch (err) {
     console.error('Error deleting customer:', err);
     res.status(500).json({ error: err.message || 'Failed to delete customer.' });
@@ -678,6 +1019,7 @@ export async function restoreUser(req, res) {
     if (targetType === 'Supplier') {
       const supplier = await Supplier.findById(id);
       if (!supplier) return res.status(404).json({ error: 'Supplier not found.' });
+      if (!assertTenantOwnership(req, supplier)) return res.status(404).json({ error: 'Supplier not found.' });
       restoredName = supplier.name;
 
       await Supplier.findByIdAndUpdate(id, { isDeleted: false, deletedAt: null, deletedBy: null });
@@ -700,6 +1042,7 @@ export async function restoreUser(req, res) {
     } else if (targetType === 'Customer') {
       const customer = await Customer.findById(id);
       if (!customer) return res.status(404).json({ error: 'Customer not found.' });
+      if (!assertTenantOwnership(req, customer)) return res.status(404).json({ error: 'Customer not found.' });
       restoredName = customer.name;
 
       await Customer.findByIdAndUpdate(id, { isDeleted: false, deletedAt: null, deletedBy: null });
@@ -722,6 +1065,7 @@ export async function restoreUser(req, res) {
     } else if (targetType === 'Employee') {
       const employee = await Employee.findById(id);
       if (!employee) return res.status(404).json({ error: 'Employee not found.' });
+      if (!assertTenantOwnership(req, employee)) return res.status(404).json({ error: 'Employee not found.' });
       restoredName = employee.name;
 
       await Employee.findByIdAndUpdate(id, { isDeleted: false, deletedAt: null, deletedBy: null });
@@ -729,6 +1073,7 @@ export async function restoreUser(req, res) {
       // User account (e.g. Clerk / Admin)
       const user = await User.findById(id);
       if (!user) return res.status(404).json({ error: 'User not found.' });
+      if (!assertTenantOwnership(req, user)) return res.status(404).json({ error: 'User not found.' });
       restoredName = user.name;
 
       if (user.email) {
@@ -785,16 +1130,50 @@ export async function deleteUser(req, res) {
     // 1. Try User model
     const user = await User.findById(id);
     if (user) {
+      if (!assertTenantOwnership(req, user)) return res.status(404).json({ error: 'User not found.' });
       found = true;
       deletedName = user.name || user.email;
+
+      // If user is a Supplier, check linked data
+      if (user.role === 'Supplier') {
+        const linkedSup = await Supplier.findOne({ userId: id }) || await Supplier.findOne({ phone: user.phone });
+        if (linkedSup) {
+          const supCheck = await getSupplierLinkedData(linkedSup.id || linkedSup._id, req);
+          if (supCheck.hasLinkedData) {
+            return res.status(400).json({
+              error: `Cannot delete supplier user "${user.name}". This supplier has active or historical data linked in the application (${supCheck.reasons.join(', ')}). Deletion is blocked to preserve data integrity.`,
+              linkedReasons: supCheck.reasons,
+              counts: supCheck.counts
+            });
+          }
+        }
+      }
+
+      // If user is a Customer, check linked data
+      if (user.role === 'Customer') {
+        const linkedCust = await Customer.findOne({ userId: id }) || await Customer.findOne({ phone: user.phone });
+        if (linkedCust) {
+          const custCheck = await getCustomerLinkedData(linkedCust.id || linkedCust._id, req);
+          if (custCheck.hasLinkedData) {
+            return res.status(400).json({
+              error: `Cannot delete customer user "${user.name}". This customer has active or historical data linked in the application (${custCheck.reasons.join(', ')}). Deletion is blocked to preserve data integrity.`,
+              linkedReasons: custCheck.reasons,
+              counts: custCheck.counts
+            });
+          }
+        }
+      }
+
       await User.findByIdAndUpdate(id, { isDeleted: true, deletedAt: now, deletedBy });
 
       const linkedSupplier = await Supplier.findOne({ userId: id });
       if (linkedSupplier) {
+        if (!assertTenantOwnership(req, linkedSupplier)) return res.status(404).json({ error: 'User not found.' });
         await Supplier.findByIdAndUpdate(linkedSupplier.id || linkedSupplier._id, { isDeleted: true, deletedAt: now, deletedBy });
       }
       const linkedCustomer = await Customer.findOne({ userId: id });
       if (linkedCustomer) {
+        if (!assertTenantOwnership(req, linkedCustomer)) return res.status(404).json({ error: 'User not found.' });
         await Customer.findByIdAndUpdate(linkedCustomer.id || linkedCustomer._id, { isDeleted: true, deletedAt: now, deletedBy });
       }
     }
@@ -803,8 +1182,19 @@ export async function deleteUser(req, res) {
     if (!found) {
       const supplier = await Supplier.findById(id);
       if (supplier) {
+        if (!assertTenantOwnership(req, supplier)) return res.status(404).json({ error: 'User record not found.' });
         found = true;
         deletedName = supplier.name;
+
+        const supCheck = await getSupplierLinkedData(id, req);
+        if (supCheck.hasLinkedData) {
+          return res.status(400).json({
+            error: `Cannot delete supplier "${supplier.name}". This supplier has active or historical data linked in the application (${supCheck.reasons.join(', ')}). Deletion is blocked to preserve data integrity.`,
+            linkedReasons: supCheck.reasons,
+            counts: supCheck.counts
+          });
+        }
+
         await Supplier.findByIdAndUpdate(id, { isDeleted: true, deletedAt: now, deletedBy });
         if (supplier.userId) {
           await User.findByIdAndUpdate(supplier.userId, { isDeleted: true, deletedAt: now, deletedBy });
@@ -816,8 +1206,19 @@ export async function deleteUser(req, res) {
     if (!found) {
       const customer = await Customer.findById(id);
       if (customer) {
+        if (!assertTenantOwnership(req, customer)) return res.status(404).json({ error: 'User record not found.' });
         found = true;
         deletedName = customer.name;
+
+        const custCheck = await getCustomerLinkedData(id, req);
+        if (custCheck.hasLinkedData) {
+          return res.status(400).json({
+            error: `Cannot delete customer "${customer.name}". This customer has active or historical data linked in the application (${custCheck.reasons.join(', ')}). Deletion is blocked to preserve data integrity.`,
+            linkedReasons: custCheck.reasons,
+            counts: custCheck.counts
+          });
+        }
+
         await Customer.findByIdAndUpdate(id, { isDeleted: true, deletedAt: now, deletedBy });
         if (customer.userId) {
           await User.findByIdAndUpdate(customer.userId, { isDeleted: true, deletedAt: now, deletedBy });
@@ -829,6 +1230,7 @@ export async function deleteUser(req, res) {
     if (!found) {
       const employee = await Employee.findById(id);
       if (employee) {
+        if (!assertTenantOwnership(req, employee)) return res.status(404).json({ error: 'User record not found.' });
         found = true;
         deletedName = employee.name;
         await Employee.findByIdAndUpdate(id, { isDeleted: true, deletedAt: now, deletedBy });

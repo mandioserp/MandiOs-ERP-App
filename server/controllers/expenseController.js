@@ -1,5 +1,5 @@
 import { Expense, AuditLog } from '../models/index.js';
-import { buildTenantQuery, getTenantId } from '../utils/tenant.js';
+import { assertTenantOwnership, buildTenantQuery, getTenantId } from '../utils/tenant.js';
 
 export async function getExpenses(req, res) {
   try {
@@ -54,6 +54,7 @@ export async function editExpense(req, res) {
     if (!expense) {
       return res.status(404).json({ error: 'Expense not found.' });
     }
+    if (!assertTenantOwnership(req, expense)) return res.status(404).json({ error: 'Expense not found.' });
 
     const tenantId = getTenantId(req) || expense.tenantId || 'tenant_default_001';
 

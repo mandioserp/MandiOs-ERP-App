@@ -1,5 +1,5 @@
 import { ReturnRecord, Sale, Customer, Supplier, Product, StockEntry, Ledger, AuditLog, Business } from '../models/index.js';
-import { buildTenantQuery, getTenantId } from '../utils/tenant.js';
+import { assertTenantOwnership, buildTenantQuery, getTenantId } from '../utils/tenant.js';
 
 // Helper to compute customer crate statistics
 async function computeCustomerCrateStats(tenantQuery) {
@@ -157,6 +157,7 @@ export async function getReturnById(req, res) {
     if (!ret) {
       return res.status(404).json({ error: 'Return record not found.' });
     }
+    if (!assertTenantOwnership(req, ret)) return res.status(404).json({ error: 'Return record not found.' });
     res.json(ret);
   } catch (err) {
     console.error('getReturnById error:', err);
@@ -169,14 +170,10 @@ export async function createReturn(req, res) {
   try {
     const tenantId = getTenantId(req) || 'tenant_default_001';
     const {
-      returnType, // 'Produce', 'Crate', 'Both'
       date,
       customerId,
       saleId,
       produceReturnedQty = 0,
-      produceCondition = 'Good',
-      goodCratesReturned = 0,
-      damagedCratesReturned = 0,
       reason = '',
       notes = '',
       status = 'Waiting Approval' // 'Draft' or 'Waiting Approval'
@@ -190,121 +187,98 @@ export async function createReturn(req, res) {
     if (!customer) {
       return res.status(404).json({ error: 'Customer not found.' });
     }
+    if (!assertTenantOwnership(req, customer)) return res.status(404).json({ error: 'Customer not found.' });
 
-    let sale = null;
+    if (!saleId) {
+      return res.status(400).json({ error: 'Please select an original sale for produce return.' });
+    }
+
+    const sale = await Sale.findById(saleId);
+    if (!sale) {
+      return res.status(404).json({ error: 'Original sale record not found.' });
+    }
+    if (!assertTenantOwnership(req, sale)) return res.status(404).json({ error: 'Original sale record not found.' });
+
     let product = null;
     let stockEntry = null;
-    let qtySold = 0;
-    let qtyAlreadyReturned = 0;
-    let saleRate = 0;
+    const qtySold = Number(sale.quantity) || 0;
+    const saleRate = Number(sale.saleRate) || 0;
     let unit = 'Crate';
-    let returnAmount = 0;
 
-    const isProduceType = returnType === 'Produce' || returnType === 'Both';
-    const isCrateType = returnType === 'Crate' || returnType === 'Both';
+    // Check existing returns for this sale
+    const pastReturns = await ReturnRecord.find({
+      saleId: sale.id || sale._id,
+      status: { $in: ['Approved', 'Waiting Approval'] },
+      isDeleted: false
+    });
+    const qtyAlreadyReturned = pastReturns.reduce((sum, r) => sum + (Number(r.produceReturnedQty) || 0), 0);
 
-    if (isProduceType) {
-      if (!saleId) {
-        return res.status(400).json({ error: 'Please select an original sale for produce return.' });
-      }
+    const maxCanReturn = Math.max(0, qtySold - qtyAlreadyReturned);
+    const produceQtyNum = Number(produceReturnedQty) || 0;
 
-      sale = await Sale.findById(saleId);
-      if (!sale) {
-        return res.status(404).json({ error: 'Original sale record not found.' });
-      }
+    if (produceQtyNum <= 0) {
+      return res.status(400).json({ error: 'Quantity now returned must be greater than zero.' });
+    }
 
-      qtySold = Number(sale.quantity) || 0;
-      saleRate = Number(sale.saleRate) || 0;
-
-      // Check existing returns for this sale
-      const pastReturns = await ReturnRecord.find({
-        saleId: sale.id || sale._id,
-        status: { $in: ['Approved', 'Waiting Approval'] },
-        isDeleted: false
+    if (produceQtyNum > maxCanReturn) {
+      return res.status(400).json({
+        error: `Quantity cannot be greater than the quantity sold. Maximum returnable is ${maxCanReturn}.`
       });
-      qtyAlreadyReturned = pastReturns.reduce((sum, r) => sum + (Number(r.produceReturnedQty) || 0), 0);
+    }
 
-      const maxCanReturn = Math.max(0, qtySold - qtyAlreadyReturned);
-      const produceQtyNum = Number(produceReturnedQty) || 0;
+    const grossReturnAmount = Math.round(produceQtyNum * saleRate * 100) / 100;
+    
+    // Calculate pro-rata commission reversal for returned produce/crates
+    let commissionReversedAmount = 0;
+    const saleCommAmount = Number(sale.commissionAmount) || 0;
+    if (qtySold > 0 && saleCommAmount > 0) {
+      const commPerUnit = saleCommAmount / qtySold;
+      commissionReversedAmount = Math.round(produceQtyNum * commPerUnit * 100) / 100;
+    }
+    
+    // Total amount to credit customer (Gross Value + Commission that was charged on these units)
+    const returnAmount = Math.round((grossReturnAmount + commissionReversedAmount) * 100) / 100;
 
-      if (produceQtyNum <= 0) {
-        return res.status(400).json({ error: 'Quantity now returned must be greater than zero.' });
-      }
-
-      if (produceQtyNum > maxCanReturn) {
-        return res.status(400).json({
-          error: `Quantity cannot be greater than the quantity sold. Maximum returnable is ${maxCanReturn}.`
-        });
-      }
-
-      const grossReturnAmount = Math.round(produceQtyNum * saleRate * 100) / 100;
-      
-      // Calculate pro-rata commission reversal for returned produce/crates
-      let commissionReversedAmount = 0;
-      const saleCommAmount = Number(sale.commissionAmount) || 0;
-      if (qtySold > 0 && saleCommAmount > 0) {
-        const commPerUnit = saleCommAmount / qtySold;
-        commissionReversedAmount = Math.round(produceQtyNum * commPerUnit * 100) / 100;
-      }
-      
-      // Total amount to credit customer (Gross Value + Commission that was charged on these units)
-      returnAmount = Math.round((grossReturnAmount + commissionReversedAmount) * 100) / 100;
-
-      if (sale.productId) {
-        product = await Product.findById(sale.productId);
-        if (product) {
-          unit = product.unit || 'Crate';
-        }
-      }
-      if (sale.stockEntryId) {
-        stockEntry = await StockEntry.findById(sale.stockEntryId);
-        if (stockEntry && stockEntry.isSettled) {
-          return res.status(400).json({
-            error: `Cannot return produce or crates from Lot #${stockEntry.lotNumber || String(stockEntry.id || stockEntry._id).substring(0,8).toUpperCase()}. This consignment lot has already been recorded to Payables & Supply Value.`
-          });
-        }
+    if (sale.productId) {
+      product = await Product.findById(sale.productId);
+      if (product && !assertTenantOwnership(req, product)) return res.status(404).json({ error: 'Original sale record not found.' });
+      if (product) {
+        unit = product.unit || 'Crate';
       }
     }
 
-    let goodCratesNum = Number(goodCratesReturned) || 0;
-    let damagedCratesNum = Number(damagedCratesReturned) || 0;
-    let totalCratesToday = goodCratesNum + damagedCratesNum;
-    let cratesGiven = 0;
-    let cratesAlreadyReturned = 0;
+    // Validation: Block produce returns if product, sale, or lot status is 'Submitted for Approval', 'Approved', or 'Accepted'
+    const blockedStatuses = ['submitted for approval', 'approved', 'accepted', 'submitted_for_approval'];
+    const productStatus = (product?.status || product?.approvalStatus || '').trim().toLowerCase();
+    const saleStatus = (sale?.status || sale?.approvalStatus || '').trim().toLowerCase();
+    
+    if (blockedStatuses.includes(productStatus)) {
+      return res.status(400).json({
+        error: `Produce cannot be returned because product '${product?.name || 'Produce'}' status is '${product?.status || product?.approvalStatus}'. Products with status 'Submitted for Approval', 'Approved', or 'Accepted' are not allowed to be returned.`
+      });
+    }
 
-    if (isCrateType) {
-      // Calculate customer's total crates given vs returned (excluding settled lots)
-      const tenantQuery = buildTenantQuery(req);
-      const [allSales, allReturns, allStocks] = await Promise.all([
-        Sale.find({ ...tenantQuery, customerId }),
-        ReturnRecord.find({ ...tenantQuery, customerId, status: 'Approved', isDeleted: false }),
-        StockEntry.find(tenantQuery)
-      ]);
+    if (blockedStatuses.includes(saleStatus) && saleStatus !== 'approved' && saleStatus !== 'accepted') {
+      return res.status(400).json({
+        error: `Produce cannot be returned because sale status is '${sale?.status || sale?.approvalStatus}'.`
+      });
+    }
 
-      const settledStockIds = new Set(
-        allStocks
-          .filter(s => s.isSettled)
-          .map(s => String(s.id || s._id))
-      );
-
-      cratesGiven = allSales
-        .filter(s => !s.stockEntryId || !settledStockIds.has(String(s.stockEntryId)))
-        .reduce((sum, s) => sum + (Number(s.quantity) || 0), 0);
-
-      cratesAlreadyReturned = allReturns
-        .filter(r => !r.stockEntryId || !settledStockIds.has(String(r.stockEntryId)))
-        .reduce((sum, r) => sum + (Number(r.goodCratesReturned || 0) + Number(r.damagedCratesReturned || 0)), 0);
-
-      const currentCratesWithCustomer = Math.max(0, cratesGiven - cratesAlreadyReturned);
-
-      if (totalCratesToday <= 0 && isCrateType && !isProduceType) {
-        return res.status(400).json({ error: 'Please enter a valid number of crates returned today.' });
-      }
-
-      if (totalCratesToday > currentCratesWithCustomer) {
-        return res.status(400).json({
-          error: `Customer has ${currentCratesWithCustomer} crates. You cannot return more than ${currentCratesWithCustomer}.`
-        });
+    if (sale.stockEntryId) {
+      stockEntry = await StockEntry.findById(sale.stockEntryId);
+      if (stockEntry && !assertTenantOwnership(req, stockEntry)) return res.status(404).json({ error: 'Original sale record not found.' });
+      if (stockEntry) {
+        const stockStatus = (stockEntry.status || stockEntry.approvalStatus || '').trim().toLowerCase();
+        if (blockedStatuses.includes(stockStatus) && stockStatus !== 'approved' && stockStatus !== 'accepted') {
+          return res.status(400).json({
+            error: `Produce cannot be returned because consignment lot status is '${stockEntry.status || stockEntry.approvalStatus}'.`
+          });
+        }
+        if (stockEntry.isSettled) {
+          return res.status(400).json({
+            error: `Cannot return produce from Lot #${stockEntry.lotNumber || String(stockEntry.id || stockEntry._id).substring(0,8).toUpperCase()}. This consignment lot has already been recorded to Payables & Supply Value.`
+          });
+        }
       }
     }
 
@@ -312,45 +286,33 @@ export async function createReturn(req, res) {
     const totalCount = await ReturnRecord.countDocuments({ tenantId }) || 0;
     const returnNumber = `RET-${String(totalCount + 1001).padStart(4, '0')}`;
 
-    // Compute gross and commission reversal
-    let grossReturnAmount = 0;
-    let commissionReversedAmount = 0;
-    if (isProduceType) {
-      grossReturnAmount = Math.round(Number(produceReturnedQty) * saleRate * 100) / 100;
-      if (sale && Number(sale.quantity) > 0 && Number(sale.commissionAmount) > 0) {
-        const commPerUnit = Number(sale.commissionAmount) / Number(sale.quantity);
-        commissionReversedAmount = Math.round(Number(produceReturnedQty) * commPerUnit * 100) / 100;
-      }
-    }
-    const finalCreditAmount = Math.round((grossReturnAmount + commissionReversedAmount) * 100) / 100;
-
     const newReturn = await ReturnRecord.create({
       tenantId,
       returnNumber,
-      returnType,
+      returnType: 'Produce',
       date: date || new Date().toISOString().split('T')[0],
       status: status === 'Draft' ? 'Draft' : 'Waiting Approval',
       customerId: customer.id || customer._id,
       customerName: customer.name,
-      saleId: sale ? (sale.id || sale._id) : null,
-      stockEntryId: sale ? (sale.stockEntryId || null) : null,
-      productId: sale ? (sale.productId || null) : null,
-      productName: sale ? (sale.productName || (product?.name) || '') : '',
+      saleId: sale.id || sale._id,
+      stockEntryId: sale.stockEntryId || null,
+      productId: sale.productId || null,
+      productName: sale.productName || (product?.name) || '',
       unit,
       saleRate,
       quantitySold: qtySold,
       quantityAlreadyReturned: qtyAlreadyReturned,
-      produceReturnedQty: isProduceType ? Number(produceReturnedQty) : 0,
-      produceCondition: isProduceType ? produceCondition : 'Good',
+      produceReturnedQty: produceQtyNum,
+      produceCondition: 'Good',
       grossReturnAmount,
       commissionReversedAmount,
       commissionRate: sale?.commissionRate || '',
-      returnAmount: isProduceType ? finalCreditAmount : 0,
-      cratesGiven,
-      cratesAlreadyReturned,
-      goodCratesReturned: isCrateType ? goodCratesNum : 0,
-      damagedCratesReturned: isCrateType ? damagedCratesNum : 0,
-      totalCratesReturned: isCrateType ? totalCratesToday : 0,
+      returnAmount,
+      cratesGiven: 0,
+      cratesAlreadyReturned: 0,
+      goodCratesReturned: 0,
+      damagedCratesReturned: 0,
+      totalCratesReturned: 0,
       reason,
       notes,
       recordedBy: req.user?.id || '',
@@ -387,24 +349,23 @@ export async function approveReturn(req, res) {
     if (!returnRecord) {
       return res.status(404).json({ error: 'Return record not found.' });
     }
+    if (!assertTenantOwnership(req, returnRecord)) return res.status(404).json({ error: 'Return record not found.' });
 
     if (returnRecord.status === 'Approved') {
       return res.status(400).json({ error: 'Return has already been approved.' });
     }
 
     const tenantId = getTenantId(req) || returnRecord.tenantId || 'tenant_default_001';
-    const isProduce = returnRecord.returnType === 'Produce' || returnRecord.returnType === 'Both';
-    const isCrate = returnRecord.returnType === 'Crate' || returnRecord.returnType === 'Both';
+    const qty = Number(returnRecord.produceReturnedQty) || 0;
+    const retAmt = Number(returnRecord.returnAmount) || (qty * (returnRecord.saleRate || 0));
 
     // 1. UPDATE PRODUCE STOCK & CUSTOMER BALANCE & SUPPLIER SETTLEMENT
-    if (isProduce && returnRecord.produceReturnedQty > 0) {
-      const qty = Number(returnRecord.produceReturnedQty);
-      const retAmt = Number(returnRecord.returnAmount) || (qty * (returnRecord.saleRate || 0));
-
-      // 1a. Update Product Stock (ONLY if Good condition)
-      if (returnRecord.produceCondition === 'Good' && returnRecord.productId) {
+    if (qty > 0) {
+      // 1a. Update Product Stock (always restock returned produce)
+      if (returnRecord.productId) {
         const product = await Product.findById(returnRecord.productId);
         if (product) {
+          if (!assertTenantOwnership(req, product)) return res.status(404).json({ error: 'Return record not found.' });
           await Product.findByIdAndUpdate(product.id || product._id, {
             currentQuantity: product.currentQuantity + qty
           });
@@ -414,6 +375,7 @@ export async function approveReturn(req, res) {
       // 1b. Update Customer Balance (Credit customer - they owe us less)
       const customer = await Customer.findById(returnRecord.customerId);
       if (customer) {
+        if (!assertTenantOwnership(req, customer)) return res.status(404).json({ error: 'Return record not found.' });
         const newCustBalance = customer.currentBalance - retAmt;
         await Customer.findByIdAndUpdate(customer.id || customer._id, {
           totalPurchases: Math.max(0, customer.totalPurchases - retAmt),
@@ -431,7 +393,7 @@ export async function approveReturn(req, res) {
           type: 'Credit',
           amount: retAmt,
           balanceAfter: newCustBalance,
-          description: `PRODUCE RETURN (${returnRecord.returnNumber}): Returned ${qty} ${returnRecord.unit || 'Crates'} of ${returnRecord.productName || 'Produce'} [Condition: ${returnRecord.produceCondition}]. Gross: Rs. ${returnRecord.grossReturnAmount || (qty * (returnRecord.saleRate || 0))}${commNote}. Reason: ${returnRecord.reason || 'Customer Return'}`
+          description: `PRODUCE RETURN (${returnRecord.returnNumber}): Returned ${qty} ${returnRecord.unit || 'Crates'} of ${returnRecord.productName || 'Produce'}. Gross: Rs. ${returnRecord.grossReturnAmount || (qty * (returnRecord.saleRate || 0))}${commNote}. Reason: ${returnRecord.reason || 'Customer Return'}`
         });
       }
 
@@ -439,23 +401,32 @@ export async function approveReturn(req, res) {
       if (returnRecord.stockEntryId) {
         const stockEntry = await StockEntry.findById(returnRecord.stockEntryId);
         if (stockEntry) {
-          // If Good produce returned, increase remaining consignment quantity back in that lot so it can be resold
-          const isGood = returnRecord.produceCondition === 'Good';
-          const newRemaining = (stockEntry.remainingQuantity !== undefined ? stockEntry.remainingQuantity : stockEntry.quantity) + (isGood ? qty : 0);
+          if (!assertTenantOwnership(req, stockEntry)) return res.status(404).json({ error: 'Return record not found.' });
+          const supplierGrossValue = Math.round((returnRecord.grossReturnAmount || (qty * (returnRecord.saleRate || 0))) * 100) / 100;
+
+          // Increase remaining consignment quantity back in that lot so it can be resold
+          const initialQty = Number(stockEntry.quantity) || 0;
+          const currentRem = stockEntry.remainingQuantity !== undefined ? stockEntry.remainingQuantity : initialQty;
+          const newRemaining = Math.min(initialQty, currentRem + qty);
+
+          // Update totalAmount on stockEntry (deduct returned produce gross value)
+          const newTotalAmount = Math.max(0, Math.round(((stockEntry.totalAmount || 0) - supplierGrossValue) * 100) / 100);
           
+          // Recalculate average purchase rate realized
+          const netSoldQty = Math.max(0, initialQty - newRemaining);
+          const newPurchaseRate = netSoldQty > 0 ? Math.round((newTotalAmount / netSoldQty) * 100) / 100 : (stockEntry.purchaseRate || 0);
+
           await StockEntry.findByIdAndUpdate(stockEntry.id || stockEntry._id, {
-            remainingQuantity: newRemaining
+            remainingQuantity: newRemaining,
+            totalAmount: newTotalAmount,
+            purchaseRate: newPurchaseRate
           });
 
-          // Update Supplier Ledger & Balance (Return value decreased from Supplier)
-          // The gross sale value of returned produce was initially credited/supplied by supplier;
-          // on return, we debit the supplier ledger / decrease totalSupplied & payable debt
-          const supplierGrossValue = Math.round((returnRecord.grossReturnAmount || (qty * (returnRecord.saleRate || 0))) * 100) / 100;
-          if (supplierGrossValue > 0 && stockEntry.supplierId) {
+          // Update Supplier Ledger & Balance (Only if this lot was already finalized and settled into payables)
+          if (stockEntry.isSettled && supplierGrossValue > 0 && stockEntry.supplierId) {
             const supplier = await Supplier.findById(stockEntry.supplierId);
             if (supplier) {
-              // For Supplier: negative currentBalance = debt we owe them.
-              // When return happens, we owe them LESS (balance moves towards 0, i.e. + supplierGrossValue)
+              if (!assertTenantOwnership(req, supplier)) return res.status(404).json({ error: 'Return record not found.' });
               const newSupplierBalance = (supplier.currentBalance || 0) + supplierGrossValue;
               const newTotalSupplied = Math.max(0, (supplier.totalSupplied || 0) - supplierGrossValue);
 
@@ -474,7 +445,7 @@ export async function approveReturn(req, res) {
                 type: 'Debit',
                 amount: supplierGrossValue,
                 balanceAfter: newSupplierBalance,
-                description: `PRODUCE RETURN DEDUCTION (${returnRecord.returnNumber}): Returned ${qty} ${returnRecord.unit || 'Crates'} of ${returnRecord.productName || 'Produce'} by customer ${returnRecord.customerName}. Lot #${stockEntry.lotNumber || String(stockEntry.id || stockEntry._id).substring(0,8).toUpperCase()} available quantity restocked to ${newRemaining} crates for resale.`
+                description: `PRODUCE RETURN DEDUCTION (${returnRecord.returnNumber}): Returned ${qty} ${returnRecord.unit || 'Crates'} of ${returnRecord.productName || 'Produce'} by customer ${returnRecord.customerName}. Settled Lot #${stockEntry.lotNumber || String(stockEntry.id || stockEntry._id).substring(0,8).toUpperCase()} payable adjusted. Available quantity restocked to ${newRemaining} crates.`
               });
             }
           }
@@ -497,7 +468,7 @@ export async function approveReturn(req, res) {
       userName: req.user?.name || 'Admin',
       userRole: req.user?.role || 'Admin',
       action: 'APPROVE_RETURN',
-      details: `Approved Return #${returnRecord.returnNumber} for Customer: ${returnRecord.customerName}. Adjusted produce (${returnRecord.produceReturnedQty} units, condition: ${returnRecord.produceCondition}), crates (${returnRecord.totalCratesReturned} crates), credit Rs. ${returnRecord.returnAmount}`,
+      details: `Approved Return #${returnRecord.returnNumber} for Customer: ${returnRecord.customerName}. Restocked ${returnRecord.produceReturnedQty} units of produce, credit Rs. ${returnRecord.returnAmount}`,
       timestamp: new Date().toISOString()
     });
 
@@ -522,6 +493,7 @@ export async function rejectReturn(req, res) {
     if (!returnRecord) {
       return res.status(404).json({ error: 'Return record not found.' });
     }
+    if (!assertTenantOwnership(req, returnRecord)) return res.status(404).json({ error: 'Return record not found.' });
 
     if (returnRecord.status === 'Approved') {
       return res.status(400).json({ error: 'Cannot reject an already approved return.' });
@@ -566,6 +538,7 @@ export async function updateReturn(req, res) {
     if (!existing) {
       return res.status(404).json({ error: 'Return record not found.' });
     }
+    if (!assertTenantOwnership(req, existing)) return res.status(404).json({ error: 'Return record not found.' });
 
     if (existing.status !== 'Draft') {
       return res.status(400).json({ error: 'Only Draft returns can be edited.' });
@@ -624,6 +597,7 @@ export async function deleteReturn(req, res) {
     if (!existing) {
       return res.status(404).json({ error: 'Return record not found.' });
     }
+    if (!assertTenantOwnership(req, existing)) return res.status(404).json({ error: 'Return record not found.' });
 
     if (existing.status === 'Approved') {
       return res.status(400).json({ error: 'Approved returns cannot be deleted directly.' });
@@ -670,16 +644,22 @@ export async function getCustomerRecentSales(req, res) {
     }
 
     const tenantQuery = buildTenantQuery(req);
-    const [sales, returns, stockEntries] = await Promise.all([
+    const [sales, returns, stockEntries, products] = await Promise.all([
       Sale.find({ ...tenantQuery, customerId }),
       ReturnRecord.find({ ...tenantQuery, customerId, status: { $in: ['Approved', 'Waiting Approval'] }, isDeleted: false }),
-      StockEntry.find(tenantQuery)
+      StockEntry.find(tenantQuery),
+      Product.find(tenantQuery)
     ]);
 
-    // Build settled lot map
+    // Build map for stock and products
     const stockMap = {};
     for (const s of stockEntries) {
       stockMap[String(s.id || s._id)] = s;
+    }
+
+    const productMap = {};
+    for (const p of products) {
+      productMap[String(p.id || p._id)] = p;
     }
 
     // Compute returned qty per sale
@@ -691,20 +671,31 @@ export async function getCustomerRecentSales(req, res) {
       }
     }
 
+    const blockedStatuses = ['submitted for approval', 'approved', 'accepted', 'submitted_for_approval'];
+
     // Decorate sales with return metrics
     const result = sales.map(s => {
       const sId = String(s.id || s._id);
       const stock = s.stockEntryId ? stockMap[String(s.stockEntryId)] : null;
+      const product = s.productId ? productMap[String(s.productId)] : null;
       const isLotSettled = stock?.isSettled || false;
+      
+      const productStatus = (product?.status || product?.approvalStatus || '').trim();
+      const isProductStatusBlocked = blockedStatuses.includes(productStatus.toLowerCase());
+
       const alreadyReturned = returnedMap[sId] || 0;
-      const canReturn = isLotSettled ? 0 : Math.max(0, (Number(s.quantity) || 0) - alreadyReturned);
+      const rawCanReturn = Math.max(0, (Number(s.quantity) || 0) - alreadyReturned);
+      const canReturn = (isLotSettled || isProductStatusBlocked) ? 0 : rawCanReturn;
+
       return {
         id: sId,
         _id: sId,
         saleNumber: sId.substring(0, 8).toUpperCase(),
         date: s.date,
         productId: s.productId,
-        productName: s.productName || 'Produce Lot',
+        productName: s.productName || product?.name || 'Produce Lot',
+        productStatus: productStatus || '',
+        isProductStatusBlocked,
         quantitySold: Number(s.quantity) || 0,
         saleRate: Number(s.saleRate) || 0,
         totalAmount: Number(s.totalAmount) || 0,

@@ -1,25 +1,80 @@
 import jwt from 'jsonwebtoken';
 import bcryptjs from 'bcryptjs';
-import { User, Business, AuditLog } from '../models/index.js';
+import { User, Business, AuditLog, Customer, Supplier } from '../models/index.js';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'mandi-secret-key-123!';
+const JWT_SECRET = process.env.JWT_SECRET;
+
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET is required to authenticate requests.');
+}
 
 export async function login(req, res) {
   try {
-    const { email, password, role } = req.body;
+    const rawIdentifier = req.body.identifier || req.body.khataId || req.body.email;
+    const { password, role } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Please provide email and password.' });
+    const isParty = role === 'Customer' || role === 'Supplier';
+
+    if (!rawIdentifier || !password) {
+      return res.status(400).json({ 
+        error: isParty ? 'Please provide Khata ID and password.' : 'Please provide email and password.' 
+      });
     }
 
-    const cleanEmail = email.trim().toLowerCase();
+    const cleanInput = rawIdentifier.trim();
+    const cleanLower = cleanInput.toLowerCase();
+    const cleanUpper = cleanInput.toUpperCase();
 
-    // Case-insensitive user lookup
+    // Prevent Customer and Supplier from logging in with an email address
+    if (isParty && cleanInput.includes('@')) {
+      return res.status(400).json({
+        error: `${role} accounts can only log in using their assigned Khata ID (e.g. SFM-C-1). Email login is not allowed for ${role}s.`
+      });
+    }
+
     const allUsers = await User.find({});
-    const user = allUsers.find(u => u.email && u.email.trim().toLowerCase() === cleanEmail);
+    let user = null;
+
+    if (isParty) {
+      // Strictly lookup by Khata ID for Customer and Supplier
+      user = allUsers.find(u => 
+        u.role?.toLowerCase() === role.toLowerCase() &&
+        u.khataId && u.khataId.trim().toUpperCase() === cleanUpper
+      );
+
+      // If not directly on User object, check linked Customer/Supplier collection by Khata ID
+      if (!user && role === 'Customer') {
+        const allCustomers = await Customer.find({ isDeleted: { $ne: true } });
+        const matchedCust = allCustomers.find(c => c.khataId && c.khataId.trim().toUpperCase() === cleanUpper);
+        if (matchedCust && matchedCust.userId) {
+          user = allUsers.find(u => (u.id === matchedCust.userId || u._id?.toString() === matchedCust.userId));
+        }
+      } else if (!user && role === 'Supplier') {
+        const allSuppliers = await Supplier.find({ isDeleted: { $ne: true } });
+        const matchedSupp = allSuppliers.find(s => s.khataId && s.khataId.trim().toUpperCase() === cleanUpper);
+        if (matchedSupp && matchedSupp.userId) {
+          user = allUsers.find(u => (u.id === matchedSupp.userId || u._id?.toString() === matchedSupp.userId));
+        }
+      }
+
+    } else {
+      // For Admin, Clerk, and Super Admin, lookup strictly by email
+      user = allUsers.find(u => 
+        u.email && u.email.trim().toLowerCase() === cleanLower
+      );
+
+      // If a Customer or Supplier account tries to log in with email without selecting role, disallow customer/supplier email login
+      if (user && (user.role === 'Customer' || user.role === 'Supplier')) {
+        return res.status(403).json({
+          error: `${user.role}s must select "${user.role}" role and log in using their Khata ID (${user.khataId || 'assigned ID'}). Email login is disabled for ${user.role}s.`
+        });
+      }
+    }
 
     if (!user) {
-      return res.status(401).json({ error: 'Invalid email or password.' });
+      return res.status(401).json({ 
+        error: isParty ? 'Invalid Khata ID or password.' : 'Invalid email or password.' 
+      });
     }
 
     // Check soft deletion
@@ -33,12 +88,12 @@ export async function login(req, res) {
     }
 
     // Role check (allow super_admin if user is super_admin regardless of dropdown role)
-    const isSuperAdmin = user.role === 'super_admin' || user.role === 'Super Admin' || cleanEmail === 'superadmin@mandios.com';
+    const isSuperAdmin = user.role === 'super_admin' || user.role === 'Super Admin' || cleanLower === 'superadmin@mandios.com';
     if (!isSuperAdmin && role && user.role.toLowerCase() !== role.toLowerCase()) {
       return res.status(401).json({ error: `Selected role (${role}) does not match your registered profile.` });
     }
 
-    // Password validation with bcrypt + fallback
+    // Password validation requires a stored bcrypt hash.
     let isMatch = false;
     if (user.password) {
       try {
@@ -49,23 +104,10 @@ export async function login(req, res) {
     }
 
     if (!isMatch) {
-      if (password.trim() === user.password) {
-        isMatch = true;
-      } else if (cleanEmail === 'superadmin@mandios.com' && password.trim() === 'super123') {
-        isMatch = true;
-      } else if (cleanEmail === 'admin@mandi.com' && password.trim() === 'admin123') {
-        isMatch = true;
-      } else if (cleanEmail === 'clerk@mandi.com' && password.trim() === 'clerk123') {
-        isMatch = true;
-      } else if (cleanEmail === 'supplier1@mandi.com' && password.trim() === 'supplier123') {
-        isMatch = true;
-      } else if (cleanEmail === 'customer1@mandi.com' && password.trim() === 'customer123') {
-        isMatch = true;
-      }
-    }
-
-    if (!isMatch) {
-      return res.status(401).json({ error: 'Invalid email or password.' });
+      const isParty = user.role === 'Customer' || user.role === 'Supplier';
+      return res.status(401).json({ 
+        error: isParty ? 'Invalid Khata ID or password.' : 'Invalid email or password.' 
+      });
     }
 
     // Business tenant status check for non-super_admin users
@@ -87,11 +129,22 @@ export async function login(req, res) {
       }
     }
 
+    // Fetch Khata ID if not directly attached
+    let userKhataId = user.khataId || '';
+    if (!userKhataId && user.role === 'Customer') {
+      const cust = await Customer.findOne({ userId: user.id || user._id });
+      if (cust && cust.khataId) userKhataId = cust.khataId;
+    } else if (!userKhataId && user.role === 'Supplier') {
+      const supp = await Supplier.findOne({ userId: user.id || user._id });
+      if (supp && supp.khataId) userKhataId = supp.khataId;
+    }
+
     // Generate JWT
     const token = jwt.sign(
       {
         id: user.id || user._id,
         email: user.email,
+        khataId: userKhataId,
         name: user.name,
         role: user.role,
         tenantId: user.tenantId || (user.role === 'super_admin' ? null : 'tenant_default_001')
@@ -107,7 +160,7 @@ export async function login(req, res) {
       userName: user.name,
       userRole: user.role,
       action: 'LOGIN',
-      details: `User logged in as ${user.role}.`,
+      details: `User logged in as ${user.role}${userKhataId ? ` (Khata ID: ${userKhataId})` : ''}.`,
       timestamp: new Date().toISOString(),
     });
 
@@ -116,6 +169,7 @@ export async function login(req, res) {
       user: {
         id: user.id || user._id,
         email: user.email,
+        khataId: userKhataId,
         name: user.name,
         role: user.role,
         phone: user.phone,
@@ -136,9 +190,20 @@ export async function getProfile(req, res) {
     if (!user) {
       return res.status(404).json({ error: 'User profile not found.' });
     }
+
+    let userKhataId = user.khataId || '';
+    if (!userKhataId && user.role === 'Customer') {
+      const cust = await Customer.findOne({ userId: user.id || user._id });
+      if (cust && cust.khataId) userKhataId = cust.khataId;
+    } else if (!userKhataId && user.role === 'Supplier') {
+      const supp = await Supplier.findOne({ userId: user.id || user._id });
+      if (supp && supp.khataId) userKhataId = supp.khataId;
+    }
+
     res.json({
       id: user.id || user._id,
       email: user.email,
+      khataId: userKhataId,
       name: user.name,
       role: user.role,
       phone: user.phone,
@@ -149,5 +214,88 @@ export async function getProfile(req, res) {
   } catch (err) {
     console.error('Error in getProfile:', err);
     res.status(500).json({ error: 'Server error retrieving profile.' });
+  }
+}
+
+export async function changePassword(req, res) {
+  try {
+    const { currentPassword, newPassword, confirmPassword } = req.body;
+
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      return res.status(400).json({ 
+        error: 'Please fill all 3 fields: current password, new password, and confirm password.' 
+      });
+    }
+
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({ 
+        error: 'New password and confirm password do not match.' 
+      });
+    }
+
+    if (newPassword.trim().length < 6) {
+      return res.status(400).json({ 
+        error: 'New password must be at least 6 characters long.' 
+      });
+    }
+
+    const userId = req.user?.id || req.user?._id;
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized user session.' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User account not found.' });
+    }
+
+    // Verify current password with bcryptjs
+    let isCurrentValid = false;
+    if (user.password) {
+      try {
+        isCurrentValid = bcryptjs.compareSync(currentPassword.trim(), user.password);
+      } catch (e) {
+        isCurrentValid = false;
+      }
+    }
+
+    // Fallback comparison for unhashed legacy/test passwords
+    if (!isCurrentValid && user.password && currentPassword.trim() === user.password) {
+      isCurrentValid = true;
+    }
+
+    if (!isCurrentValid) {
+      return res.status(400).json({ 
+        error: 'Current password is incorrect. Please verify your old password and try again.' 
+      });
+    }
+
+    // Hash the new password securely
+    const salt = bcryptjs.genSaltSync(10);
+    const hashedPassword = bcryptjs.hashSync(newPassword.trim(), salt);
+
+    await User.findByIdAndUpdate(user.id || user._id, {
+      password: hashedPassword,
+      updatedAt: new Date().toISOString()
+    });
+
+    // Create Audit Log entry
+    await AuditLog.create({
+      tenantId: user.tenantId || 'tenant_default_001',
+      userId: user.id || user._id,
+      userName: user.name,
+      userRole: user.role,
+      action: 'PASSWORD_CHANGE',
+      details: `${user.role} "${user.name}" updated their password.`,
+      timestamp: new Date().toISOString(),
+    });
+
+    return res.json({ 
+      success: true,
+      message: 'Password changed successfully! You can now use your new password.' 
+    });
+  } catch (err) {
+    console.error('Error changing password:', err);
+    return res.status(500).json({ error: err.message || 'Server error while changing password.' });
   }
 }

@@ -6,6 +6,7 @@ import UnitManagement from './UnitManagement.jsx';
 import ExpenseCategories from './ExpenseCategories.jsx';
 import PaymentMethods from './PaymentMethods.jsx';
 import InvoiceSettings from './InvoiceSettings.jsx';
+import ChangePassword from './ChangePassword.jsx';
 // import BackupSettings from './BackupSettings.jsx';
 
 import {
@@ -13,6 +14,7 @@ import {
   Tag,
   CreditCard,
   FileText,
+  KeyRound,
 } from 'lucide-react';
 
 export default function SettingsContainer({ tab, showToast }) {
@@ -32,6 +34,7 @@ export default function SettingsContainer({ tab, showToast }) {
     { id: 'expenses', name: 'Expense Categories', icon: Tag },
     { id: 'payments', name: 'Payment Methods', icon: CreditCard },
     { id: 'invoice', name: 'Invoice Layout', icon: FileText },
+    { id: 'password', name: 'Change Password', icon: KeyRound },
   ];
 
   const renderActiveComponent = () => {
@@ -44,6 +47,9 @@ export default function SettingsContainer({ tab, showToast }) {
         return <PaymentMethods showToast={showToast} />;
       case 'invoice':
         return <InvoiceSettings showToast={showToast} />;
+      case 'password':
+      case 'security':
+        return <ChangePassword showToast={showToast} />;
       default:
         return <UnitManagement showToast={showToast} />;
     }

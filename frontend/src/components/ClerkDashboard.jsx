@@ -24,6 +24,7 @@ export default function ClerkDashboard({ tab, setCurrentTab }) {
   const [products, setProducts] = useState([]);
   const [stockEntries, setStockEntries] = useState([]);
   const [sales, setSales] = useState([]);
+  const [returns, setReturns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
 
@@ -32,8 +33,10 @@ export default function ClerkDashboard({ tab, setCurrentTab }) {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 8;
   const [filterSupplier, setFilterSupplier] = useState('');
+  const [filterProduct, setFilterProduct] = useState('');
   const [filterCustomer, setFilterCustomer] = useState('');
   const [filterDate, setFilterDate] = useState('');
+  const [filterStockStatus, setFilterStockStatus] = useState('');
   const [invoiceSettings, setInvoiceSettings] = useState(null);
 
   // Modals
@@ -51,12 +54,13 @@ export default function ClerkDashboard({ tab, setCurrentTab }) {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [suppliersRes, customersRes, productsRes, stockRes, salesRes, invoiceSettingsRes] = await Promise.all([
+      const [suppliersRes, customersRes, productsRes, stockRes, salesRes, returnsRes, invoiceSettingsRes] = await Promise.all([
         api.get('/suppliers').catch(() => ({ data: [] })),
         api.get('/customers').catch(() => ({ data: [] })),
         api.get('/products').catch(() => ({ data: [] })),
         api.get('/stock').catch(() => ({ data: [] })),
         api.get('/sales').catch(() => ({ data: [] })),
+        api.get('/returns').catch(() => ({ data: [] })),
         api.get('/settings/invoice').catch(() => ({ data: null })),
       ]);
 
@@ -67,6 +71,7 @@ export default function ClerkDashboard({ tab, setCurrentTab }) {
       setProducts(extractArray(productsRes.data));
       setStockEntries(extractArray(stockRes.data));
       setSales(extractArray(salesRes.data));
+      setReturns(extractArray(returnsRes.data));
       setInvoiceSettings(invoiceSettingsRes.data || null);
     } catch (err) {
       showToast('Error loading server data', 'error');
@@ -145,25 +150,132 @@ export default function ClerkDashboard({ tab, setCurrentTab }) {
     }
   };
 
+  // Enriched Stock Entries with Returns calculations
+  const enrichedStockEntries = React.useMemo(() => {
+    return stockEntries.map(entry => {
+      const entryId = String(entry.id || entry._id);
+      const lotNumStr = entry.lotNumber ? String(entry.lotNumber) : null;
+
+      // Find linked sales
+      const lotSales = (sales || []).filter(s => {
+        if (s.isDeleted) return false;
+        const sStockId = s.stockEntryId ? String(s.stockEntryId) : null;
+        const sLotNum = s.stockLotNumber ? String(s.stockLotNumber) : null;
+        if (sStockId && sStockId === entryId) return true;
+        if (sLotNum && lotNumStr && sLotNum === lotNumStr) return true;
+        return false;
+      });
+
+      // Find linked approved returns
+      const lotReturns = (returns || []).filter(r => {
+        if (r.isDeleted || r.status !== 'Approved') return false;
+        const rStockId = r.stockEntryId ? String(r.stockEntryId) : null;
+        const rSaleId = r.saleId ? String(r.saleId) : null;
+        const matchesStock = (rStockId && rStockId === entryId);
+        const matchesSale = rSaleId && lotSales.some(s => String(s.id || s._id) === rSaleId);
+        return matchesStock || matchesSale;
+      });
+
+      const arrivedQty = entry.arrivedQuantity !== undefined ? Number(entry.arrivedQuantity) : (Number(entry.quantity) || 0);
+      const rawSoldQty = lotSales.length > 0
+        ? lotSales.reduce((acc, s) => acc + (Number(s.quantity) || 0), 0)
+        : (entry.soldQuantity !== undefined ? Number(entry.soldQuantity) : 0);
+
+      const returnedProduceQty = lotReturns.length > 0
+        ? lotReturns.reduce((acc, r) => acc + (Number(r.produceReturnedQty) || 0), 0)
+        : (entry.returnedQuantity !== undefined ? Number(entry.returnedQuantity) : 0);
+
+      const netSoldQty = Math.max(0, rawSoldQty - returnedProduceQty);
+      const remainingQty = entry.remainingQuantity !== undefined 
+        ? Number(entry.remainingQuantity) 
+        : Math.max(0, arrivedQty - netSoldQty);
+
+      const rawGrossSales = lotSales.reduce((acc, s) => acc + (Number(s.grossSale) || (Number(s.quantity || 0) * Number(s.saleRate || 0)) || 0), 0);
+      const returnedGross = lotReturns.reduce((acc, r) => acc + (Number(r.grossReturnAmount) || (Number(r.produceReturnedQty || 0) * Number(r.saleRate || 0)) || 0), 0);
+      const totalAmount = (rawGrossSales > 0 || returnedGross > 0)
+        ? Math.max(0, Math.round((rawGrossSales - returnedGross) * 100) / 100)
+        : (Number(entry.totalAmount) || 0);
+
+      const avgRate = netSoldQty > 0 
+        ? (Math.round((totalAmount / netSoldQty) * 100) / 100)
+        : (Number(entry.purchaseRate) || 0);
+
+      const status = remainingQty === 0 ? 'Depleted' : (netSoldQty > 0 ? 'Partially Sold' : 'In-Stock');
+      const lotNumber = entry.lotNumber || (entryId.substring(0, 6).toUpperCase());
+      const unit = entry.unit || 'Crates';
+
+      return {
+        ...entry,
+        lotNumber,
+        unit,
+        arrivedQty,
+        soldQty: rawSoldQty,
+        returnedProduceQty,
+        netSoldQty,
+        remainingQty,
+        avgRate,
+        totalAmount,
+        status,
+      };
+    });
+  }, [stockEntries, sales, returns]);
+
+  // Stock Summary calculations
+  const stockSummary = React.useMemo(() => {
+    let totalLots = enrichedStockEntries.length;
+    let totalArrived = 0;
+    let totalSold = 0;
+    let totalReturned = 0;
+    let totalRemaining = 0;
+    let totalCreditedAmount = 0;
+
+    enrichedStockEntries.forEach(item => {
+      totalArrived += (item.arrivedQty || 0);
+      totalSold += (item.soldQty || 0);
+      totalReturned += (item.returnedProduceQty || 0);
+      totalRemaining += (item.remainingQty || 0);
+      totalCreditedAmount += (item.totalAmount || 0);
+    });
+
+    return {
+      totalLots,
+      totalArrived,
+      totalSold,
+      totalReturned,
+      netSold: Math.max(0, totalSold - totalReturned),
+      totalRemaining,
+      totalCreditedAmount
+    };
+  }, [enrichedStockEntries]);
+
   const filterAndPaginate = (list) => {
     let filtered = Array.isArray(list) ? list : [];
 
     if (searchTerm) {
+      const term = searchTerm.toLowerCase();
       filtered = filtered.filter(item => 
         Object.values(item).some(val => 
-          String(val).toLowerCase().includes(searchTerm.toLowerCase())
-        )
+          String(val).toLowerCase().includes(term)
+        ) ||
+        (item.lotNumber && String(item.lotNumber).toLowerCase().includes(term)) ||
+        (item.vehicleNumber && String(item.vehicleNumber).toLowerCase().includes(term))
       );
     }
 
     if (filterSupplier) {
       filtered = filtered.filter(item => item.supplierId === filterSupplier);
     }
+    if (filterProduct) {
+      filtered = filtered.filter(item => item.productId === filterProduct || item.productName?.toLowerCase().includes(filterProduct.toLowerCase()));
+    }
     if (filterCustomer) {
       filtered = filtered.filter(item => item.customerId === filterCustomer);
     }
     if (filterDate) {
       filtered = filtered.filter(item => item.date === filterDate);
+    }
+    if (tab === 'stock' && filterStockStatus) {
+      filtered = filtered.filter(item => item.status === filterStockStatus);
     }
 
     const totalItems = filtered.length;
@@ -330,75 +442,263 @@ export default function ClerkDashboard({ tab, setCurrentTab }) {
       {/* ----------------- TAB: SUPPLIER STOCK (PURCHASE) ----------------- */}
       {tab === 'stock' && (
         <div className="space-y-6">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <h3 className="text-lg font-black uppercase tracking-wider">Agriculture Stock Supplies</h3>
-              <p className="text-xs text-slate-500 dark:text-slate-400">Add, edit, or delete shipments supplied by growers and farmers</p>
+              <h3 className="text-lg font-black uppercase tracking-wider">Supplies Inventory Log (Purchase)</h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Record and track consignment lots, produce arrivals, sales dispatches, and restocked customer returns</p>
             </div>
             <button 
               onClick={() => openModal('stock', 'add')}
-              className="flex items-center space-x-2 bg-[#4F46E5] hover:bg-[#4F46E5] text-white font-bold text-xs px-4 py-2.5 rounded-xl transition-all"
+              className="flex items-center space-x-2 bg-[#4F46E5] hover:bg-[#4338CA] text-white font-bold text-xs px-4 py-2.5 rounded-xl transition-all shadow-md shadow-indigo-500/10 cursor-pointer"
             >
               <Plus size={16} />
-              <span>RECORD NEW SHIPMENT</span>
+              <span>RECORD NEW STOCK ARRIVAL</span>
             </button>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="flex items-center px-4 py-3 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-200 dark:border-slate-800/80">
-              <Search size={16} className="text-slate-500 dark:text-slate-400 mr-2" />
-              <input type="text" placeholder="Search supplies..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="bg-transparent border-0 outline-none text-xs w-full" />
+          {/* Top Summary Metrics Bar */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800/80 shadow-xs">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Total Lots</div>
+              <div className="text-lg font-black text-slate-800 dark:text-white mt-1">{stockSummary.totalLots}</div>
+              <div className="text-[10px] text-slate-400 mt-0.5">Consignments</div>
             </div>
-            <div className="flex items-center px-4 py-3 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-200 dark:border-slate-800/80">
-              <Filter size={16} className="text-slate-500 dark:text-slate-400 mr-2" />
-              <select value={filterSupplier} onChange={e => setFilterSupplier(e.target.value)} className="bg-transparent border-0 outline-none text-xs w-full">
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800/80 shadow-xs">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-indigo-400">Arrived Stock</div>
+              <div className="text-lg font-black text-indigo-500 dark:text-indigo-400 mt-1">{stockSummary.totalArrived.toLocaleString()}</div>
+              <div className="text-[10px] text-slate-400 mt-0.5">Total received</div>
+            </div>
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800/80 shadow-xs">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-blue-400">Gross Sold</div>
+              <div className="text-lg font-black text-blue-500 dark:text-blue-400 mt-1">{stockSummary.totalSold.toLocaleString()}</div>
+              <div className="text-[10px] text-slate-400 mt-0.5">Sales tickets</div>
+            </div>
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-[#1E293B] border border-amber-200/50 dark:border-amber-900/30 bg-amber-50/30 dark:bg-amber-950/10 shadow-xs">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-amber-500 dark:text-amber-400 flex items-center gap-1">
+                <RotateCcw size={11} />
+                <span>Returned Qty</span>
+              </div>
+              <div className="text-lg font-black text-amber-600 dark:text-amber-400 mt-1">{stockSummary.totalReturned.toLocaleString()}</div>
+              <div className="text-[10px] text-amber-600/80 dark:text-amber-400/80 mt-0.5">Restocked</div>
+            </div>
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-[#1E293B] border border-emerald-200/50 dark:border-emerald-900/30 bg-emerald-50/30 dark:bg-emerald-950/10 shadow-xs">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-500 dark:text-emerald-400">Remaining Stock</div>
+              <div className="text-lg font-black text-emerald-600 dark:text-emerald-400 mt-1">{stockSummary.totalRemaining.toLocaleString()}</div>
+              <div className="text-[10px] text-emerald-600/80 dark:text-emerald-400/80 mt-0.5">In warehouse</div>
+            </div>
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800/80 shadow-xs">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-rose-400">Total Value</div>
+              <div className="text-lg font-black text-rose-500 dark:text-rose-400 mt-1">Rs. {stockSummary.totalCreditedAmount.toLocaleString()}</div>
+              <div className="text-[10px] text-slate-400 mt-0.5">Net turnover</div>
+            </div>
+          </div>
+
+          {/* Search & Filter Bar */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+            <div className="flex items-center px-4 py-3 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800/80">
+              <Search size={16} className="text-slate-500 dark:text-slate-400 mr-2 shrink-0" />
+              <input 
+                type="text" 
+                placeholder="Search by Lot #, supplier, produce..." 
+                value={searchTerm} 
+                onChange={e => setSearchTerm(e.target.value)} 
+                className="bg-transparent border-0 outline-none text-xs w-full placeholder:text-slate-500" 
+              />
+            </div>
+            <div className="flex items-center px-4 py-3 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800/80">
+              <Filter size={16} className="text-slate-500 dark:text-slate-400 mr-2 shrink-0" />
+              <select 
+                value={filterSupplier} 
+                onChange={e => setFilterSupplier(e.target.value)} 
+                className="bg-transparent border-0 outline-none text-xs w-full"
+              >
                 <option value="">All Suppliers</option>
                 {suppliers.map(s => <option key={s.id || s._id} value={s.id || s._id}>{s.name}</option>)}
               </select>
             </div>
-            <div className="flex items-center px-4 py-3 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-200 dark:border-slate-800/80">
-              <Calendar size={16} className="text-slate-500 dark:text-slate-400 mr-2" />
-              <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} className="bg-transparent border-0 outline-none text-xs w-full" />
+            <div className="flex items-center px-4 py-3 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800/80">
+              <Tag size={16} className="text-slate-500 dark:text-slate-400 mr-2 shrink-0" />
+              <select 
+                value={filterProduct} 
+                onChange={e => setFilterProduct(e.target.value)} 
+                className="bg-transparent border-0 outline-none text-xs w-full"
+              >
+                <option value="">All Products</option>
+                {products.map(p => <option key={p.id || p._id} value={p.id || p._id}>{p.name}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center px-4 py-3 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800/80">
+              <Activity size={16} className="text-slate-500 dark:text-slate-400 mr-2 shrink-0" />
+              <select 
+                value={filterStockStatus} 
+                onChange={e => setFilterStockStatus(e.target.value)} 
+                className="bg-transparent border-0 outline-none text-xs w-full"
+              >
+                <option value="">All Statuses</option>
+                <option value="In-Stock">In-Stock (Available)</option>
+                <option value="Partially Sold">Partially Sold</option>
+                <option value="Depleted">Depleted (Zero Balance)</option>
+              </select>
+            </div>
+            <div className="flex items-center px-4 py-3 rounded-2xl bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800/80">
+              <Calendar size={16} className="text-slate-500 dark:text-slate-400 mr-2 shrink-0" />
+              <input 
+                type="date" 
+                value={filterDate} 
+                onChange={e => setFilterDate(e.target.value)} 
+                className="bg-transparent border-0 outline-none text-xs w-full" 
+              />
             </div>
           </div>
 
-          <div className="bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-200 dark:border-slate-800/80 rounded-2xl overflow-hidden">
-            <table className="w-full text-left border-collapse text-xs">
-              <thead>
-                <tr className="border-b border-slate-200 dark:border-slate-200 dark:border-slate-800/80 text-[10px] text-slate-500 dark:text-slate-400 uppercase font-bold">
-                  <th className="py-4 px-5">Date</th>
-                  <th className="py-4 px-5">Supplier Name</th>
-                  <th className="py-4 px-5">Product Name</th>
-                  <th className="py-4 px-5 text-right">Arrived Qty</th>
-                  <th className="py-4 px-5 text-right">Remaining Qty</th>
-                  <th className="py-4 px-5 text-right">Avg Sale Rate</th>
-                  <th className="py-4 px-5 text-right">Total Credited</th>
-                  <th className="py-4 px-5 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-200 dark:divide-slate-800/50">
-                {filterAndPaginate(stockEntries).paginated.map(entry => {
-                  const rem = entry.remainingQuantity !== undefined ? entry.remainingQuantity : entry.quantity;
-                  return (
-                    <tr key={entry.id || entry._id}>
-                      <td className="py-3 px-5 font-bold text-slate-700 dark:text-slate-300">{entry.date}</td>
-                      <td className="py-3 px-5 font-semibold">{entry.supplierName}</td>
-                      <td className="py-3 px-5">{entry.productName}</td>
-                      <td className="py-3 px-5 text-right font-bold text-indigo-400">{entry.quantity}</td>
-                      <td className="py-3 px-5 text-right font-bold text-emerald-400">{rem}</td>
-                      <td className="py-3 px-5 text-right">Rs. {entry.purchaseRate || 0}</td>
-                      <td className="py-3 px-5 text-right font-bold text-rose-400">Rs. {(entry.totalAmount || 0).toLocaleString()}</td>
-                      <td className="py-3 px-5 text-right">
-                        <div className="flex items-center justify-end space-x-2">
-                          <button onClick={() => openModal('stock', 'edit', entry)} className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-700 dark:text-slate-300"><Pencil size={13} /></button>
-                          <button onClick={() => handleDelete('stock', entry.id || entry._id, `${entry.quantity} of ${entry.productName}`)} className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400"><Trash size={13} /></button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          <div className="bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-800/80 rounded-2xl overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 dark:border-slate-800/80 text-[11px] text-slate-500 dark:text-slate-400 uppercase font-bold tracking-wider bg-slate-50/50 dark:bg-slate-900/40">
+                    <th className="py-4 px-5">Lot # & Date</th>
+                    <th className="py-4 px-5">Supplier / Grower</th>
+                    <th className="py-4 px-5">Commodity</th>
+                    <th className="py-4 px-5 text-right">Arrived Qty</th>
+                    <th className="py-4 px-5 text-right">Sold Qty</th>
+                    <th className="py-4 px-5 text-right">Returned Qty</th>
+                    <th className="py-4 px-5 text-right">Remaining Qty</th>
+                    <th className="py-4 px-5 text-right">Avg Realized Rate</th>
+                    <th className="py-4 px-5 text-right">Total Credited</th>
+                    <th className="py-4 px-5 text-center">Status</th>
+                    <th className="py-4 px-5 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">
+                  {(() => {
+                    const { paginated, totalPages } = filterAndPaginate(enrichedStockEntries);
+                    if (paginated.length === 0) {
+                      return (
+                        <tr>
+                          <td colSpan={11} className="py-12 text-center text-slate-400">
+                            No stock arrival supplies found matching current filters.
+                          </td>
+                        </tr>
+                      );
+                    }
+                    return paginated.map(entry => {
+                      const hasReturns = (entry.returnedProduceQty || 0) > 0;
+                      return (
+                        <tr key={entry.id || entry._id} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/30 transition-colors">
+                          <td className="py-3.5 px-5">
+                            <div className="flex items-center space-x-2">
+                              <span className="font-mono font-black text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 px-2 py-0.5 rounded text-[11px] border border-indigo-200/40 dark:border-indigo-800/40">
+                                #{entry.lotNumber}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">{entry.date}</div>
+                            {entry.vehicleNumber && (
+                              <div className="text-[10px] text-slate-400 flex items-center gap-1 mt-0.5">
+                                <Truck size={10} />
+                                <span>{entry.vehicleNumber}</span>
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-3.5 px-5">
+                            <div className="font-bold text-slate-900 dark:text-white">{entry.supplierName}</div>
+                            {entry.supplierPhone && <div className="text-[11px] text-slate-400">{entry.supplierPhone}</div>}
+                          </td>
+                          <td className="py-3.5 px-5">
+                            <div className="font-semibold text-slate-800 dark:text-slate-200">{entry.productName}</div>
+                            <span className="inline-block text-[10px] bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded text-slate-500 dark:text-slate-400 mt-0.5">
+                              {entry.unit || 'Crates'}
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-5 text-right font-bold text-indigo-600 dark:text-indigo-400">
+                            {entry.arrivedQty} <span className="text-[10px] font-normal text-slate-400">{entry.unit || 'Crates'}</span>
+                          </td>
+                          <td className="py-3.5 px-5 text-right font-semibold text-blue-600 dark:text-blue-400">
+                            {entry.soldQty} <span className="text-[10px] font-normal text-slate-400">{entry.unit || 'Crates'}</span>
+                          </td>
+                          <td className="py-3.5 px-5 text-right">
+                            {hasReturns ? (
+                              <span className="inline-flex items-center gap-1 font-bold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 px-2 py-0.5 rounded text-xs border border-amber-200/50 dark:border-amber-800/40">
+                                <RotateCcw size={10} />
+                                {entry.returnedProduceQty} {entry.unit || 'Crates'}
+                              </span>
+                            ) : (
+                              <span className="text-slate-400">0</span>
+                            )}
+                          </td>
+                          <td className="py-3.5 px-5 text-right font-black text-emerald-600 dark:text-emerald-400 text-sm">
+                            {entry.remainingQty} <span className="text-[10px] font-normal text-slate-400">{entry.unit || 'Crates'}</span>
+                          </td>
+                          <td className="py-3.5 px-5 text-right font-semibold text-slate-700 dark:text-slate-300">
+                            Rs. {entry.avgRate || 0}
+                          </td>
+                          <td className="py-3.5 px-5 text-right font-black text-rose-600 dark:text-rose-400">
+                            Rs. {(entry.totalAmount || 0).toLocaleString()}
+                          </td>
+                          <td className="py-3.5 px-5 text-center">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                              entry.status === 'Depleted'
+                                ? 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+                                : entry.status === 'Partially Sold'
+                                ? 'bg-indigo-50 text-indigo-600 dark:bg-indigo-950/40 dark:text-indigo-400 border border-indigo-200/40 dark:border-indigo-800/40'
+                                : 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400 border border-emerald-200/40 dark:border-emerald-800/40'
+                            }`}>
+                              {entry.status}
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-5 text-right">
+                            <div className="flex items-center justify-end space-x-1.5">
+                              <button 
+                                onClick={() => openModal('stock', 'edit', entry)} 
+                                title="Edit Lot Arrival"
+                                className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-colors cursor-pointer"
+                              >
+                                <Pencil size={13} />
+                              </button>
+                              <button 
+                                onClick={() => handleDelete('stock', entry.id || entry._id, `Lot #${entry.lotNumber} (${entry.arrivedQty} of ${entry.productName})`)} 
+                                title="Delete Lot Arrival"
+                                className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-500 dark:text-red-400 transition-colors cursor-pointer"
+                              >
+                                <Trash size={13} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    });
+                  })()}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pagination Controls */}
+            {(() => {
+              const { totalPages, totalItems } = filterAndPaginate(enrichedStockEntries);
+              if (totalPages <= 1) return null;
+              return (
+                <div className="flex items-center justify-between px-5 py-3 border-t border-slate-200 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-900/30 text-xs">
+                  <div className="text-slate-500 dark:text-slate-400">
+                    Showing Page <span className="font-bold text-slate-800 dark:text-white">{currentPage}</span> of <span className="font-bold text-slate-800 dark:text-white">{totalPages}</span> ({totalItems} total supply lots)
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      disabled={currentPage === 1}
+                      onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                      className="px-3 py-1.5 rounded-lg bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 disabled:opacity-40 font-medium hover:bg-slate-50 cursor-pointer"
+                    >
+                      Previous
+                    </button>
+                    <button
+                      disabled={currentPage >= totalPages}
+                      onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                      className="px-3 py-1.5 rounded-lg bg-white dark:bg-[#1E293B] border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 disabled:opacity-40 font-medium hover:bg-slate-50 cursor-pointer"
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}
@@ -545,6 +845,17 @@ export default function ClerkDashboard({ tab, setCurrentTab }) {
                   <div className="space-y-1">
                     <label className="text-slate-500 dark:text-slate-400 font-bold uppercase block">Voucher Date</label>
                     <input required type="date" name="date" value={formData.date || ''} onChange={handleFormChange} className="w-full bg-[#F8FAFC] dark:bg-[#0F172A] border border-slate-200 dark:border-slate-800/80 rounded-xl px-4 py-3 outline-none" />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-slate-500 dark:text-slate-400 font-bold uppercase block">Vehicle / Truck No. (Optional)</label>
+                    <input type="text" name="vehicleNumber" value={formData.vehicleNumber || ''} onChange={handleFormChange} placeholder="e.g. LES-4921" className="w-full bg-[#F8FAFC] dark:bg-[#0F172A] border border-slate-200 dark:border-slate-800/80 rounded-xl px-4 py-3 outline-none uppercase font-mono" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-slate-500 dark:text-slate-400 font-bold uppercase block">Lot Reference # (Optional)</label>
+                    <input type="text" name="lotNumber" value={formData.lotNumber || ''} onChange={handleFormChange} placeholder="Auto-assigned if empty" className="w-full bg-[#F8FAFC] dark:bg-[#0F172A] border border-slate-200 dark:border-slate-800/80 rounded-xl px-4 py-3 outline-none uppercase font-mono" />
                   </div>
                 </div>
 

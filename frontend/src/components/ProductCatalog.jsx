@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import api from '../utils/api.js';
 import { useLanguage } from '../context/LanguageContext.jsx';
 import { useConfirm } from '../context/ConfirmContext.jsx';
+import DialogAlert from './common/DialogAlert.jsx';
 import {
   Plus, Pencil, Trash2, Search, Filter, ShoppingBag, 
   Boxes, Layers, CheckCircle2, AlertTriangle, X, RefreshCw,
@@ -37,6 +38,7 @@ export default function ProductCatalog({
   // Modal State
   const [modalMode, setModalMode] = useState(null); // null, 'add', 'edit'
   const [selectedProduct, setSelectedProduct] = useState(null);
+  const [modalAlert, setModalAlert] = useState(null);
   const [formData, setFormData] = useState({
     name: '',
     category: 'Fruits',
@@ -208,6 +210,7 @@ export default function ProductCatalog({
 
   const handleOpenEdit = (product) => {
     setSelectedProduct(product);
+    setModalAlert(null);
     setFormData({
       name: product.name || '',
       category: product.category || 'Fruits',
@@ -225,6 +228,7 @@ export default function ProductCatalog({
   const handleCloseModal = () => {
     setModalMode(null);
     setSelectedProduct(null);
+    setModalAlert(null);
   };
 
   const handleFormChange = (e) => {
@@ -237,11 +241,12 @@ export default function ProductCatalog({
     if (submitting) return;
 
     if (!formData.name.trim()) {
-      notify('Please enter a product name.', 'error');
+      setModalAlert({ type: 'error', message: 'Please enter a product name.' });
       return;
     }
 
     setSubmitting(true);
+    setModalAlert(null);
     try {
       if (modalMode === 'add') {
         const res = await api.post('/products', formData);
@@ -263,7 +268,8 @@ export default function ProductCatalog({
       else fetchData();
     } catch (err) {
       console.error('Error saving product:', err);
-      notify(err.response?.data?.error || 'Failed to save product details.', 'error');
+      const errMsg = err.response?.data?.error || 'Failed to save product details.';
+      setModalAlert({ type: 'error', message: errMsg });
     } finally {
       setSubmitting(false);
     }
@@ -812,6 +818,8 @@ export default function ProductCatalog({
                 <X size={18} />
               </button>
             </div>
+
+            <DialogAlert alert={modalAlert} onDismiss={() => setModalAlert(null)} />
 
             <form onSubmit={handleSubmit} className="space-y-4 text-xs">
               {/* Product Name */}

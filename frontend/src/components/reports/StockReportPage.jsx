@@ -3,6 +3,7 @@ import api from '../../utils/api';
 import { useLanguage } from '../../context/LanguageContext';
 import { exportToCSV } from '../../utils/navigation';
 import { Printer, Download, Filter, Search, Boxes, RefreshCw } from 'lucide-react';
+import PrintReportHeader from '../common/PrintReportHeader.jsx';
 
 export default function StockReportPage() {
   const { t } = useLanguage();
@@ -165,15 +166,21 @@ export default function StockReportPage() {
       </div>
 
       {/* Printable Header */}
-      <div className="hidden print:block text-slate-900 border-b-2 border-slate-300 pb-4 mb-6">
-        <div className="flex justify-between items-start">
-          <div>
-            <h1 className="text-2xl font-black uppercase tracking-wider">LAHORE SABZI & FRUIT MANDI BROKERAGE</h1>
-            <p className="text-sm font-bold text-indigo-700">Inventory Stock Arrival & Warehouse Balance Report</p>
-            <p className="text-xs text-slate-500 mt-1">Report Generated: {new Date().toLocaleString()}</p>
-          </div>
-        </div>
-      </div>
+      <PrintReportHeader
+        title="INVENTORY STOCK ARRIVAL & WAREHOUSE BALANCE REPORT"
+        period={`${startDate || 'All-Time'} to ${endDate || 'Present'}`}
+        filters={[
+          ...(supplierFilter ? [{ label: 'Supplier', value: suppliers.find(s => s._id === supplierFilter)?.name || supplierFilter }] : []),
+          ...(productFilter ? [{ label: 'Produce Item', value: products.find(p => p._id === productFilter)?.name || productFilter }] : []),
+          ...(statusFilter !== 'All' ? [{ label: 'Stock Status', value: statusFilter }] : [])
+        ]}
+        summaryMetrics={[
+          { label: 'Consignment Lots', value: `${filteredStock.length} Lots` },
+          { label: 'Total Received Qty', value: `${totalReceivedQty.toLocaleString()} Units` },
+          { label: 'Total Sold Qty', value: `${totalSoldQty.toLocaleString()} Units` },
+          { label: 'Remaining Warehouse Stock', value: `${totalRemainingQty.toLocaleString()} Units` }
+        ]}
+      />
 
       {/* Summary Metrics */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 print:hidden">
@@ -346,6 +353,17 @@ export default function StockReportPage() {
                 ))
               )}
             </tbody>
+            {filteredStock.length > 0 && (
+              <tfoot>
+                <tr className="bg-slate-100 dark:bg-slate-800/90 font-bold border-t-2 border-slate-300 dark:border-slate-700 text-[11px] text-slate-900 dark:text-white">
+                  <td colSpan="5" className="py-3 px-4 font-black">TOTALS ({filteredStock.length} Consignment Lots)</td>
+                  <td className="py-3 px-4 text-right font-black">{totalReceivedQty.toLocaleString()}</td>
+                  <td className="py-3 px-4 text-right font-black text-indigo-600 dark:text-indigo-400">{totalSoldQty.toLocaleString()}</td>
+                  <td className="py-3 px-4 text-right font-black text-amber-600 dark:text-amber-400">{totalRemainingQty.toLocaleString()}</td>
+                  <td className="py-3 px-4 text-center">-</td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       </div>

@@ -1,18 +1,92 @@
 import { StockEntry, Product, Supplier, Ledger, AuditLog, Sale, ReturnRecord } from '../models/index.js';
-import { buildTenantQuery, getTenantId } from '../utils/tenant.js';
+import { assertTenantOwnership, buildTenantQuery, getTenantId } from '../utils/tenant.js';
 
 export async function getStockEntries(req, res) {
   try {
-    const entries = await StockEntry.find(buildTenantQuery(req));
-    res.json(entries);
+    const tenantQuery = buildTenantQuery(req);
+    const [entries, sales, returns, products] = await Promise.all([
+      StockEntry.find(tenantQuery),
+      Sale.find({ ...tenantQuery, isDeleted: { $ne: true } }),
+      ReturnRecord.find({ ...tenantQuery, status: 'Approved', isDeleted: false }),
+      Product.find(tenantQuery)
+    ]);
+
+    const productMap = {};
+    for (const p of products) {
+      productMap[String(p.id || p._id)] = p;
+    }
+
+    const enrichedEntries = entries.map(entry => {
+      const entryId = String(entry.id || entry._id);
+      const lotNumStr = entry.lotNumber ? String(entry.lotNumber) : null;
+
+      // Find linked sales for this stock entry
+      const lotSales = sales.filter(s => {
+        const sStockId = s.stockEntryId ? String(s.stockEntryId) : null;
+        const sLotNum = s.stockLotNumber ? String(s.stockLotNumber) : null;
+        if (sStockId && sStockId === entryId) return true;
+        if (sLotNum && lotNumStr && sLotNum === lotNumStr) return true;
+        return false;
+      });
+
+      // Find linked approved returns for this stock entry
+      const lotReturns = returns.filter(r => {
+        const rStockId = r.stockEntryId ? String(r.stockEntryId) : null;
+        const rSaleId = r.saleId ? String(r.saleId) : null;
+        const matchesStock = (rStockId && rStockId === entryId);
+        const matchesSale = rSaleId && lotSales.some(s => String(s.id || s._id) === rSaleId);
+        return matchesStock || matchesSale;
+      });
+
+      const arrivedQuantity = Number(entry.quantity) || 0;
+      const rawSoldQuantity = lotSales.reduce((acc, s) => acc + (Number(s.quantity) || 0), 0);
+      const returnedQuantity = lotReturns.reduce((acc, r) => acc + (Number(r.produceReturnedQty) || 0), 0);
+      const netSoldQuantity = Math.max(0, rawSoldQuantity - returnedQuantity);
+      const remainingQuantity = Math.max(0, arrivedQuantity - netSoldQuantity);
+
+      const rawGrossSales = lotSales.reduce((acc, s) => acc + (Number(s.grossSale) || (Number(s.quantity || 0) * Number(s.saleRate || 0)) || 0), 0);
+      const returnedGrossValue = lotReturns.reduce((acc, r) => acc + (Number(r.grossReturnAmount) || (Number(r.produceReturnedQty || 0) * Number(r.saleRate || 0)) || 0), 0);
+      const totalAmount = Math.max(0, Math.round((rawGrossSales - returnedGrossValue) * 100) / 100);
+
+      const purchaseRate = netSoldQuantity > 0 ? Math.round((totalAmount / netSoldQuantity) * 100) / 100 : (entry.purchaseRate || 0);
+
+      const prod = entry.productId ? productMap[String(entry.productId)] : null;
+      const unit = entry.unit || prod?.unit || 'Crates';
+      const lotNumber = entry.lotNumber || (entryId.substring(0, 6).toUpperCase());
+      const status = remainingQuantity === 0 ? 'Depleted' : (netSoldQuantity > 0 ? 'Partially Sold' : 'In-Stock');
+
+      const entryObj = typeof entry.toObject === 'function' ? entry.toObject() : { ...entry };
+
+      return {
+        ...entryObj,
+        lotNumber,
+        unit,
+        arrivedQuantity,
+        soldQuantity: rawSoldQuantity,
+        returnedQuantity,
+        netSoldQuantity,
+        remainingQuantity,
+        purchaseRate,
+        totalAmount,
+        grossSalesAmount: rawGrossSales,
+        returnedGrossAmount: returnedGrossValue,
+        status,
+      };
+    });
+
+    // Sort newest date first
+    enrichedEntries.sort((a, b) => new Date(b.date || b.createdAt || 0) - new Date(a.date || a.createdAt || 0));
+
+    res.json(enrichedEntries);
   } catch (err) {
+    console.error('getStockEntries error:', err);
     res.status(500).json({ error: 'Failed to fetch stock entries.' });
   }
 }
 
 export async function addStockEntry(req, res) {
   try {
-    const { supplierId, productId, quantity, date } = req.body;
+    const { supplierId, productId, quantity, date, vehicleNumber, lotNumber } = req.body;
     const tenantId = getTenantId(req) || 'tenant_default_001';
 
     if (!supplierId || !productId || !quantity || !date) {
@@ -23,17 +97,29 @@ export async function addStockEntry(req, res) {
     if (!supplier) {
       return res.status(404).json({ error: 'Supplier not found.' });
     }
+    if (!assertTenantOwnership(req, supplier)) return res.status(404).json({ error: 'Supplier not found.' });
 
     const product = await Product.findById(productId);
     if (!product) {
       return res.status(404).json({ error: 'Product not found.' });
     }
+    if (!assertTenantOwnership(req, product)) return res.status(404).json({ error: 'Product not found.' });
 
     const qty = Number(quantity);
+
+    // Auto-generate lotNumber if not supplied
+    let finalLotNumber = lotNumber;
+    if (!finalLotNumber) {
+      const totalCount = await StockEntry.countDocuments({ tenantId }) || 0;
+      finalLotNumber = `${totalCount + 1001}`;
+    }
 
     // Create Stock Entry
     const entry = await StockEntry.create({
       tenantId,
+      lotNumber: finalLotNumber,
+      vehicleNumber: vehicleNumber || '',
+      unit: product.unit || 'Crates',
       supplierId,
       supplierName: supplier.name,
       productId,
@@ -57,7 +143,7 @@ export async function addStockEntry(req, res) {
       userName: req.user.name,
       userRole: req.user.role,
       action: 'ADD_STOCK',
-      details: `Added ${qty} ${product.unit} of ${product.name} from supplier ${supplier.name} with rate pending.`,
+      details: `Added ${qty} ${product.unit || 'units'} of ${product.name} (Lot #${finalLotNumber}) from supplier ${supplier.name}.`,
       timestamp: new Date().toISOString(),
     });
 
@@ -71,12 +157,13 @@ export async function addStockEntry(req, res) {
 export async function updateStockEntry(req, res) {
   try {
     const { id } = req.params;
-    const { supplierId, productId, quantity, date } = req.body;
+    const { supplierId, productId, quantity, date, vehicleNumber, lotNumber } = req.body;
 
     const entry = await StockEntry.findById(id);
     if (!entry) {
       return res.status(404).json({ error: 'Stock entry not found.' });
     }
+    if (!assertTenantOwnership(req, entry)) return res.status(404).json({ error: 'Stock entry not found.' });
 
     const oldQty = entry.quantity;
     const oldProductId = entry.productId;
@@ -116,6 +203,9 @@ export async function updateStockEntry(req, res) {
       supplierName: targetSupplier.name,
       productId: targetProduct.id || targetProduct._id,
       productName: targetProduct.name,
+      unit: targetProduct.unit || entry.unit || 'Crates',
+      lotNumber: lotNumber || entry.lotNumber,
+      vehicleNumber: vehicleNumber !== undefined ? vehicleNumber : entry.vehicleNumber,
       quantity: newQty,
       remainingQuantity: newRemaining,
       date,
@@ -129,7 +219,7 @@ export async function updateStockEntry(req, res) {
       userName: req.user.name,
       userRole: req.user.role,
       action: 'UPDATE_STOCK',
-      details: `Updated Stock Entry ${id}. Qty: ${oldQty} -> ${newQty}`,
+      details: `Updated Stock Entry ${id} (Lot #${updated.lotNumber || id}). Qty: ${oldQty} -> ${newQty}`,
       timestamp: new Date().toISOString(),
     });
 
@@ -147,6 +237,7 @@ export async function deleteStockEntry(req, res) {
     if (!entry) {
       return res.status(404).json({ error: 'Stock entry not found.' });
     }
+    if (!assertTenantOwnership(req, entry)) return res.status(404).json({ error: 'Stock entry not found.' });
 
     const tenantId = getTenantId(req) || entry.tenantId || 'tenant_default_001';
     const { productId, supplierId, quantity, totalAmount, productName, supplierName } = entry;
@@ -212,6 +303,7 @@ export async function updateLotFinancials(req, res) {
     if (!entry) {
       return res.status(404).json({ error: 'Stock entry lot not found.' });
     }
+    if (!assertTenantOwnership(req, entry)) return res.status(404).json({ error: 'Stock entry lot not found.' });
 
     const [lotSales, lotReturns] = await Promise.all([
       Sale.find({ stockEntryId: id, isDeleted: { $ne: true } }),
@@ -323,6 +415,7 @@ export async function recordLotSettlement(req, res) {
     if (!entry) {
       return res.status(404).json({ error: 'Consignment lot not found.' });
     }
+    if (!assertTenantOwnership(req, entry)) return res.status(404).json({ error: 'Consignment lot not found.' });
 
     // Ensure amount is recorded only once and prevents duplicate entries
     if (entry.isSettled) {
@@ -407,7 +500,9 @@ export async function recordLotSettlement(req, res) {
 
     const tenantId = getTenantId(req) || entry.tenantId || 'tenant_default_001';
 
-    // Create Supplier Ledger entry
+    // Create Consolidated Supplier Ledger entry (Bikri Parchi / Consignment Settlement)
+    const lotDesc = `LOT SETTLEMENT (Bikri Parchi): Lot #${entry.lotNumber || id.substring(0, 8).toUpperCase()} (${entry.productName || 'Produce'}) - Realized Gross: Rs. ${lotGrossSales.toLocaleString()}, Total Deductions: Rs. ${totalDeductions.toLocaleString()} (Commission: Rs. ${supplierCommissionDeduction.toLocaleString()}, Market Fee: Rs. ${marketFeeDeduction.toLocaleString()}, Expenses: Rs. ${totalExpenseDeductions.toLocaleString()}), Net Payable: Rs. ${applicableAmount.toLocaleString()} credited to Supplier Khata.`;
+
     await Ledger.create({
       tenantId,
       partyId: entry.supplierId,
@@ -416,7 +511,7 @@ export async function recordLotSettlement(req, res) {
       type: 'Credit',
       amount: applicableAmount,
       balanceAfter: updatedBalance,
-      description: `LOT SETTLEMENT RECORDED: Lot #${entry.lotNumber || id.substring(0,8).toUpperCase()} - Applicable Amount Rs. ${applicableAmount.toLocaleString()} added to Outstanding Payables & Supply Value`
+      description: lotDesc
     });
 
     // Mark StockEntry as settled to ensure it is recorded only ONCE

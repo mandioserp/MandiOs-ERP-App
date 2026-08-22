@@ -8,6 +8,7 @@ const BusinessSchema = new Schema({
   _id: { type: String, default: () => new mongoose.Types.ObjectId().toString() },
   businessName: { type: String, required: true },
   businessCode: { type: String },
+  arthiCode: { type: String, uppercase: true, trim: true },
   ownerName: { type: String, required: true },
   email: { type: String, required: true },
   phone: { type: String, default: '' },
@@ -21,8 +22,42 @@ const BusinessSchema = new Schema({
   subscriptionStartDate: { type: String },
   subscriptionExpiryDate: { type: String },
   maxUsers: { type: Number, default: 10 },
+  features: { type: Object, default: {} },
   isActive: { type: Boolean, default: true },
   isDeleted: { type: Boolean, default: false },
+}, { timestamps: true });
+
+// Platform Broadcasts & Announcements Schema
+const AnnouncementSchema = new Schema({
+  _id: { type: String, default: () => new mongoose.Types.ObjectId().toString() },
+  title: { type: String, required: true },
+  message: { type: String, required: true },
+  type: { type: String, default: 'info', enum: ['info', 'warning', 'alert', 'success'] },
+  targetAudience: { type: String, default: 'All' },
+  isActive: { type: Boolean, default: true },
+  createdBy: { type: String, default: 'Super Admin' },
+  expiresAt: { type: String },
+}, { timestamps: true });
+
+// SaaS Subscription Plans & Quota Schema
+const PlanSchema = new Schema({
+  _id: { type: String, default: () => new mongoose.Types.ObjectId().toString() },
+  name: { type: String, required: true }, // Basic, Pro, Enterprise
+  priceMonthly: { type: Number, default: 0 },
+  priceAnnual: { type: Number, default: 0 },
+  maxUsers: { type: Number, default: 5 },
+  maxProducts: { type: Number, default: 50 },
+  description: { type: String, default: '' },
+  features: {
+    logistics: { type: Boolean, default: true },
+    multiLanguage: { type: Boolean, default: true },
+    reportsExport: { type: Boolean, default: true },
+    returnsModule: { type: Boolean, default: true },
+    smsWhatsApp: { type: Boolean, default: false },
+    prioritySupport: { type: Boolean, default: false },
+  },
+  isPopular: { type: Boolean, default: false },
+  status: { type: String, default: 'Active' },
 }, { timestamps: true });
 
 // Global Platform Settings Schema (For Super Admin)
@@ -40,7 +75,17 @@ const GlobalSettingsSchema = new Schema({
 const UserSchema = new Schema({
   _id: { type: String, default: () => new mongoose.Types.ObjectId().toString() },
   tenantId: { type: String }, // Optional for super_admin, required for tenant users
-  email: { type: String, sparse: true },
+  email: { 
+    type: String, 
+    trim: true, 
+    lowercase: true,
+    index: {
+      unique: true,
+      sparse: true,
+      partialFilterExpression: { email: { $type: 'string', $gt: '' } },
+    }
+  },
+  khataId: { type: String, uppercase: true, trim: true },
   password: { type: String },
   name: { type: String, required: true },
   phone: { type: String, required: true },
@@ -77,6 +122,7 @@ const SupplierSchema = new Schema({
   _id: { type: String, default: () => new mongoose.Types.ObjectId().toString() },
   tenantId: { type: String, default: 'tenant_default_001' },
   userId: { type: String, ref: 'User' },
+  khataId: { type: String, uppercase: true, trim: true },
   name: { type: String, required: true },
   phone: { type: String, required: true },
   address: { type: String },
@@ -95,6 +141,7 @@ const CustomerSchema = new Schema({
   _id: { type: String, default: () => new mongoose.Types.ObjectId().toString() },
   tenantId: { type: String, default: 'tenant_default_001' },
   userId: { type: String, ref: 'User' },
+  khataId: { type: String, uppercase: true, trim: true },
   name: { type: String, required: true },
   phone: { type: String, required: true },
   address: { type: String },
@@ -112,6 +159,9 @@ const CustomerSchema = new Schema({
 const StockEntrySchema = new Schema({
   _id: { type: String, default: () => new mongoose.Types.ObjectId().toString() },
   tenantId: { type: String, default: 'tenant_default_001' },
+  lotNumber: { type: String },
+  vehicleNumber: { type: String, default: '' },
+  unit: { type: String, default: 'Crates' },
   supplierId: { type: String, ref: 'Supplier', required: true },
   supplierName: { type: String },
   productId: { type: String, ref: 'Product', required: true },
@@ -293,6 +343,14 @@ const SalaryAdvanceSchema = new Schema({
   isDeleted: { type: Boolean, default: false },
 }, { timestamps: true });
 
+// 15. Counter Schema (Atomic Khata ID Sequences)
+const CounterSchema = new Schema({
+  _id: { type: String, default: () => new mongoose.Types.ObjectId().toString() },
+  tenantId: { type: String, required: true },
+  role: { type: String, required: true, enum: ['Customer', 'Supplier'] },
+  seq: { type: Number, default: 0 },
+}, { timestamps: true });
+
 // Compile Mongoose Models (only if mongoose is used)
 const MongooseBusiness = mongoose.models.Business || mongoose.model('Business', BusinessSchema);
 const MongooseGlobalSettings = mongoose.models.GlobalSettings || mongoose.model('GlobalSettings', GlobalSettingsSchema);
@@ -310,6 +368,9 @@ const MongooseTruck = mongoose.models.Truck || mongoose.model('Truck', TruckSche
 const MongooseEmployee = mongoose.models.Employee || mongoose.model('Employee', EmployeeSchema);
 const MongooseSalary = mongoose.models.Salary || mongoose.model('Salary', SalarySchema);
 const MongooseSalaryAdvance = mongoose.models.SalaryAdvance || mongoose.model('SalaryAdvance', SalaryAdvanceSchema);
+const MongooseCounter = mongoose.models.Counter || mongoose.model('Counter', CounterSchema);
+const MongooseAnnouncement = mongoose.models.Announcement || mongoose.model('Announcement', AnnouncementSchema);
+const MongoosePlan = mongoose.models.Plan || mongoose.model('Plan', PlanSchema);
 
 // Create and export Wrapped Models
 export const Business = new ModelWrapper('Business', MongooseBusiness);
@@ -328,5 +389,8 @@ export const Truck = new ModelWrapper('Truck', MongooseTruck);
 export const Employee = new ModelWrapper('Employee', MongooseEmployee);
 export const Salary = new ModelWrapper('Salary', MongooseSalary);
 export const SalaryAdvance = new ModelWrapper('SalaryAdvance', MongooseSalaryAdvance);
+export const Counter = new ModelWrapper('Counter', MongooseCounter);
+export const Announcement = new ModelWrapper('Announcement', MongooseAnnouncement);
+export const Plan = new ModelWrapper('Plan', MongoosePlan);
 export { ReturnRecord } from './returnModel.js';
 

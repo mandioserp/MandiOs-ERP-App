@@ -3,6 +3,7 @@ import api from '../../utils/api';
 import { useLanguage } from '../../context/LanguageContext';
 import { exportToCSV } from '../../utils/navigation';
 import { Printer, Download, Filter, Search, RefreshCw, ShieldAlert } from 'lucide-react';
+import PrintReportHeader from '../common/PrintReportHeader.jsx';
 
 export default function AuditReportPage() {
   const { t } = useLanguage();
@@ -111,15 +112,19 @@ export default function AuditReportPage() {
       </div>
 
       {/* Printable Header */}
-      <div className="hidden print:block text-slate-900 border-b-2 border-slate-300 pb-4 mb-6">
-        <div className="flex justify-between items-start">
-          <div>
-            <h1 className="text-2xl font-black uppercase tracking-wider">LAHORE SABZI & FRUIT MANDI BROKERAGE</h1>
-            <p className="text-sm font-bold text-indigo-700">System Activity & Audit Statement Report</p>
-            <p className="text-xs text-slate-500 mt-1">Report Generated: {new Date().toLocaleString()}</p>
-          </div>
-        </div>
-      </div>
+      <PrintReportHeader
+        title="SYSTEM ACTIVITY & SECURITY AUDIT TRAIL STATEMENT"
+        period={`${startDate || 'All-Time'} to ${endDate || 'Present'}`}
+        filters={[
+          ...(roleFilter !== 'All' ? [{ label: 'User Role', value: roleFilter }] : []),
+          ...(actionFilter !== 'All' ? [{ label: 'Event Action', value: actionFilter }] : [])
+        ]}
+        summaryMetrics={[
+          { label: 'Audit Records', value: `${filteredLogs.length} Events` },
+          { label: 'Security Level', value: 'Tenant Isolated' },
+          { label: 'Audit Protocol', value: 'Immutable System Log' }
+        ]}
+      />
 
       {/* Filter Controls Bar */}
       <div className="bg-white dark:bg-[#1E293B] p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-3 print:hidden">

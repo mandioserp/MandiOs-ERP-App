@@ -3,6 +3,7 @@ import api from '../../utils/api';
 import { useLanguage } from '../../context/LanguageContext';
 import { exportToCSV } from '../../utils/navigation';
 import { Printer, Download, Filter, Search, RefreshCw, Truck } from 'lucide-react';
+import PrintReportHeader from '../common/PrintReportHeader.jsx';
 
 export default function LogisticsReportPage() {
   const { t } = useLanguage();
@@ -116,15 +117,18 @@ export default function LogisticsReportPage() {
       </div>
 
       {/* Printable Header */}
-      <div className="hidden print:block text-slate-900 border-b-2 border-slate-300 pb-4 mb-6">
-        <div className="flex justify-between items-start">
-          <div>
-            <h1 className="text-2xl font-black uppercase tracking-wider">LAHORE SABZI & FRUIT MANDI BROKERAGE</h1>
-            <p className="text-sm font-bold text-indigo-700">Truck Freight Logistics & Unloading Audit Statement</p>
-            <p className="text-xs text-slate-500 mt-1">Report Generated: {new Date().toLocaleString()}</p>
-          </div>
-        </div>
-      </div>
+      <PrintReportHeader
+        title="TRUCK FREIGHT LOGISTICS & UNLOADING AUDIT STATEMENT"
+        period={`${startDate || 'All-Time'} to ${endDate || 'Present'}`}
+        filters={[
+          ...(statusFilter !== 'All' ? [{ label: 'Status', value: statusFilter }] : [])
+        ]}
+        summaryMetrics={[
+          { label: 'Total Arrived Trucks', value: `${filteredTrucks.length} Vehicles` },
+          { label: 'Total Freight Disbursed', value: `Rs. ${totalFreight.toLocaleString()}` },
+          { label: 'Total Mandi Labor Paid', value: `Rs. ${totalLabor.toLocaleString()}` }
+        ]}
+      />
 
       {/* Summary Metrics */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 print:hidden">
@@ -272,6 +276,16 @@ export default function LogisticsReportPage() {
                 ))
               )}
             </tbody>
+            {filteredTrucks.length > 0 && (
+              <tfoot>
+                <tr className="bg-slate-100 dark:bg-slate-800/90 font-bold border-t-2 border-slate-300 dark:border-slate-700 text-[11px] text-slate-900 dark:text-white">
+                  <td colSpan="5" className="py-3 px-4 font-black">TOTALS ({filteredTrucks.length} Trucks)</td>
+                  <td className="py-3 px-4 text-right font-black text-slate-900 dark:text-white">Rs. {totalFreight.toLocaleString()}</td>
+                  <td className="py-3 px-4 text-right font-black text-slate-900 dark:text-white">Rs. {totalLabor.toLocaleString()}</td>
+                  <td className="py-3 px-4 text-center">-</td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       </div>

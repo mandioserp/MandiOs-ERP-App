@@ -1,5 +1,5 @@
 import { Product, AuditLog } from '../models/index.js';
-import { buildTenantQuery, getTenantId } from '../utils/tenant.js';
+import { assertTenantOwnership, buildTenantQuery, getTenantId } from '../utils/tenant.js';
 
 export async function getProducts(req, res) {
   try {
@@ -65,6 +65,7 @@ export async function editProduct(req, res) {
     if (!product) {
       return res.status(404).json({ error: 'Product not found.' });
     }
+    if (!assertTenantOwnership(req, product)) return res.status(404).json({ error: 'Product not found.' });
 
     const tenantId = getTenantId(req) || product.tenantId || 'tenant_default_001';
 

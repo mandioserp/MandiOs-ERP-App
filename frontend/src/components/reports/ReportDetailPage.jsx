@@ -43,6 +43,7 @@ import {
   Legend
 } from 'recharts';
 import jsPDF from 'jspdf';
+import PrintReportHeader from '../common/PrintReportHeader.jsx';
 import autoTable from 'jspdf-autotable';
 import { REPORTS_CONFIG } from '../../config/reportsConfig';
 
@@ -400,6 +401,14 @@ export default function ReportDetailPage({ user }) {
       totalCustomerCommission: 'Customer Commission (خریدار کمیشن)',
       totalSupplierCommission: 'Supplier Commission (زمیندار کمیشن)',
       totalTradeValue: 'Total Mandi Trade Value (کل تجارتی حجم)',
+      totalGrossValue: 'Total Gross Realization (کل مالیت)',
+      totalCommissionDeductions: 'Commission Deductions (کمیشن کٹوتی)',
+      totalLotExpenses: 'Lot Expenses Deducted (گاڑی خرچے)',
+      totalDeductions: 'Total Deductions (کل کٹوتیاں)',
+      netPayableToSuppliers: 'Net Payable to Suppliers (خالص رقم)',
+      totalConsignmentCrates: 'Total Arrived Crates (کل آمد کریٹ)',
+      totalSoldCrates: 'Sold Crates (فروخت شدہ کریٹ)',
+      totalRemainingCrates: 'Remaining Crates (بقایا کریٹ)',
       assessedTurnover: 'Assessed Turnover (کل نیلامی کاروبار)',
       totalMarketFeeDue: 'Total Market Fee (کل مارکیٹ فیس)',
       lotsAssessed: 'Assessed Lots (کل لاٹس)',
@@ -532,10 +541,21 @@ export default function ReportDetailPage({ user }) {
       );
     }
     if (col.format === 'number_bold') {
-      return <span className="font-bold text-slate-900 dark:text-white">{Number(val).toLocaleString()}</span>;
+      const num = Number(val) || 0;
+      if (config?.id === 'bardana') {
+        return <span className="font-bold text-slate-900 dark:text-white">{num.toLocaleString()} <span className="text-[11px] text-slate-400 font-normal">Crates</span></span>;
+      }
+      return <span className="font-bold text-slate-900 dark:text-white">{num.toLocaleString()}</span>;
     }
     if (col.format === 'number') {
-      return <span>{Number(val).toLocaleString()}</span>;
+      const num = Number(val) || 0;
+      if (config?.id === 'bardana' && (col.key === 'baseQuantity' || col.key === 'settledQuantity')) {
+        return <span>{num.toLocaleString()} <span className="text-[11px] text-slate-400 font-normal">Crates</span></span>;
+      }
+      if (row?.unit && (col.key === 'quantity' || col.key === 'soldQuantity' || col.key === 'remainingQuantity')) {
+        return <span>{num.toLocaleString()} <span className="text-[11px] text-slate-400 font-normal">{row.unit}</span></span>;
+      }
+      return <span>{num.toLocaleString()}</span>;
     }
 
     return String(val);
@@ -569,10 +589,33 @@ export default function ReportDetailPage({ user }) {
   }
 
   return (
-    <div className="space-y-6 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto">
+    <div className="space-y-6 p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto print:p-0 print:m-0 print:space-y-4">
+
+      {/* PRINT-ONLY MANDI OS BUSINESS LETTERHEAD & SUMMARY */}
+      <PrintReportHeader
+        title={config?.name || 'BUSINESS REPORT'}
+        period={config?.dateModel === 'as_of' ? asOfDate : `${startDate || asOfDate} to ${endDate || asOfDate}`}
+        filters={[
+          ...(selectedPartyId ? [{ label: 'Party', value: partiesList.find(p => p.id === selectedPartyId)?.name || selectedPartyId }] : []),
+          ...(selectedSupplierId ? [{ label: 'Supplier', value: suppliersList.find(s => (s.id || s._id) === selectedSupplierId)?.name || selectedSupplierId }] : []),
+          ...(selectedCustomerId ? [{ label: 'Customer', value: customersList.find(c => (c.id || c._id) === selectedCustomerId)?.name || selectedCustomerId }] : []),
+          ...(selectedProductId ? [{ label: 'Product', value: productsList.find(p => (p.id || p._id) === selectedProductId)?.name || selectedProductId }] : []),
+          ...(paymentMode !== 'All' ? [{ label: 'Payment Mode', value: paymentMode }] : []),
+          ...(transactionType !== 'All' ? [{ label: 'Type', value: transactionType }] : [])
+        ]}
+        summaryMetrics={
+          reportData?.summaryCards?.length > 0
+            ? reportData.summaryCards.map(c => ({ label: c.title, value: c.value }))
+            : [
+                { label: 'Total Records', value: `${sortedRows?.length || 0} Entries` },
+                { label: 'Report Tier', value: config?.tier || 'Audit' },
+                { label: 'Audited Status', value: 'Verified' }
+              ]
+        }
+      />
 
       {/* SECTION 1: Report Title & Purpose */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-sm print:hidden">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-3 mb-2">
@@ -609,7 +652,7 @@ export default function ReportDetailPage({ user }) {
       </div>
 
       {/* SECTION 2: Filter Bar */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-sm space-y-4 print:hidden">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-3 border-b border-slate-100 dark:border-slate-800">
           <div className="flex items-center gap-2">
             <Filter className="w-4 h-4 text-emerald-500" />
@@ -892,7 +935,7 @@ export default function ReportDetailPage({ user }) {
 
             {/* Chart Visualization if applicable */}
             {config.visualizationType === 'chart_and_table' && reportData?.chartData && reportData.chartData.length > 0 && (
-              <div className="bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 rounded-2xl p-5">
+              <div className="bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 print:hidden">
                 <h3 className="text-sm font-bold text-slate-800 dark:text-slate-200 mb-4">
                   Visual Trend Analytics
                 </h3>
@@ -1105,7 +1148,7 @@ export default function ReportDetailPage({ user }) {
       </div>
 
       {/* SECTION 4: Collapsible Report Details Panel */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden shadow-sm">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden shadow-sm print:hidden">
         <button
           onClick={() => setShowMetadata(!showMetadata)}
           className="w-full p-4 flex items-center justify-between bg-slate-50 dark:bg-slate-800/50 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"

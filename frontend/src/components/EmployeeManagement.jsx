@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { useLanguage } from '../context/LanguageContext.jsx';
 import { useConfirm } from '../context/ConfirmContext.jsx';
 import { downloadPayrollReportPDF } from '../utils/pdfExport.js';
+import DialogAlert from './common/DialogAlert.jsx';
 import {
   Users, UserCheck, DollarSign, Calendar, Plus, Pencil, Trash, Search, Eye, Printer, FileSpreadsheet,
   Filter, ArrowLeft, Briefcase, MapPin, Phone, Mail, FileText, CreditCard, AlertTriangle, Download,
@@ -65,6 +66,9 @@ export default function EmployeeManagement() {
   const [employeeSubmitting, setEmployeeSubmitting] = useState(false);
   const [salarySubmitting, setSalarySubmitting] = useState(false);
   const [advanceSubmitting, setAdvanceSubmitting] = useState(false);
+  const [employeeModalAlert, setEmployeeModalAlert] = useState(null);
+  const [salaryModalAlert, setSalaryModalAlert] = useState(null);
+  const [advanceModalAlert, setAdvanceModalAlert] = useState(null);
   const [employeeFormData, setEmployeeFormData] = useState({
     name: '', fatherName: '', cnic: '', phone: '', alternatePhone: '', email: '',
     address: '', city: '', photo: '', notes: '', referenceBy: '', designation: '', department: '',
@@ -219,11 +223,12 @@ export default function EmployeeManagement() {
     
     // Validations
     if (!employeeFormData.name || !employeeFormData.phone || !employeeFormData.designation || !employeeFormData.joiningDate || !employeeFormData.basicSalary) {
-      showToast('Required fields: Name, Phone, Designation, Joining Date, Salary, Type.', 'error');
+      setEmployeeModalAlert({ type: 'error', message: 'Required fields: Name, Phone, Designation, Joining Date, Salary, Type.' });
       return;
     }
 
     setEmployeeSubmitting(true);
+    setEmployeeModalAlert(null);
     try {
       const payload = {
         ...employeeFormData,
@@ -239,13 +244,15 @@ export default function EmployeeManagement() {
         showToast('Employee details updated successfully');
       }
       setShowAddEditModal(false);
+      setEmployeeModalAlert(null);
       fetchEmployees();
       if (viewMode === 'profile' && selectedEmployee) {
         fetchEmployeeProfile(selectedEmployee._id || selectedEmployee.id);
       }
     } catch (err) {
       console.error(err);
-      showToast('Failed to save employee records', 'error');
+      const errMsg = err.response?.data?.error || 'Failed to save employee records';
+      setEmployeeModalAlert({ type: 'error', message: errMsg });
     } finally {
       setEmployeeSubmitting(false);
     }
@@ -280,11 +287,12 @@ export default function EmployeeManagement() {
     e.preventDefault();
     if (salarySubmitting) return;
     if (!salaryFormData.month || !salaryFormData.year || !salaryFormData.basicSalary) {
-      showToast('Please enter Month, Year and Basic Salary', 'error');
+      setSalaryModalAlert({ type: 'error', message: 'Please enter Month, Year and Basic Salary' });
       return;
     }
 
     setSalarySubmitting(true);
+    setSalaryModalAlert(null);
     try {
       const payload = {
         employeeId: selectedEmployee._id || selectedEmployee.id,
@@ -305,10 +313,12 @@ export default function EmployeeManagement() {
       await api.post('/salaries', payload);
       showToast('Salary payment successfully processed');
       setShowSalaryModal(false);
+      setSalaryModalAlert(null);
       fetchEmployeeProfile(selectedEmployee._id || selectedEmployee.id);
     } catch (err) {
       console.error(err);
-      showToast('Failed to process salary payment', 'error');
+      const errMsg = err.response?.data?.error || 'Failed to process salary payment';
+      setSalaryModalAlert({ type: 'error', message: errMsg });
     } finally {
       setSalarySubmitting(false);
     }
@@ -319,11 +329,12 @@ export default function EmployeeManagement() {
     e.preventDefault();
     if (advanceSubmitting) return;
     if (!advanceFormData.amount || !advanceFormData.date) {
-      showToast('Amount and Date are required.', 'error');
+      setAdvanceModalAlert({ type: 'error', message: 'Amount and Date are required.' });
       return;
     }
 
     setAdvanceSubmitting(true);
+    setAdvanceModalAlert(null);
     try {
       const payload = {
         employeeId: selectedEmployee._id || selectedEmployee.id,
@@ -336,10 +347,12 @@ export default function EmployeeManagement() {
       await api.post('/advances', payload);
       showToast('Salary advance recorded successfully');
       setShowAdvanceModal(false);
+      setAdvanceModalAlert(null);
       fetchEmployeeProfile(selectedEmployee._id || selectedEmployee.id);
     } catch (err) {
       console.error(err);
-      showToast('Failed to record salary advance', 'error');
+      const errMsg = err.response?.data?.error || 'Failed to record salary advance';
+      setAdvanceModalAlert({ type: 'error', message: errMsg });
     } finally {
       setAdvanceSubmitting(false);
     }
@@ -1967,6 +1980,12 @@ export default function EmployeeManagement() {
               </button>
             </div>
 
+            {employeeModalAlert && (
+              <div className="px-6 pt-4">
+                <DialogAlert alert={employeeModalAlert} onDismiss={() => setEmployeeModalAlert(null)} />
+              </div>
+            )}
+
             {/* Modal Form */}
             <form onSubmit={handleEmployeeSubmit} className="flex-1 overflow-y-auto p-6 space-y-6 text-xs font-bold uppercase tracking-wide">
               {/* Personal Information Section */}
@@ -2271,6 +2290,12 @@ export default function EmployeeManagement() {
               </button>
             </div>
 
+            {salaryModalAlert && (
+              <div className="px-6 pt-4">
+                <DialogAlert alert={salaryModalAlert} onDismiss={() => setSalaryModalAlert(null)} />
+              </div>
+            )}
+
             <form onSubmit={handleSalarySubmit} className="flex-1 overflow-y-auto p-6 space-y-5 text-xs font-bold uppercase tracking-wide">
               
               {/* Year & Month Selection */}
@@ -2498,6 +2523,12 @@ export default function EmployeeManagement() {
                 <X size={18} />
               </button>
             </div>
+
+            {advanceModalAlert && (
+              <div className="px-6 pt-4">
+                <DialogAlert alert={advanceModalAlert} onDismiss={() => setAdvanceModalAlert(null)} />
+              </div>
+            )}
 
             <form onSubmit={handleAdvanceSubmit} className="p-6 space-y-4 text-xs font-bold uppercase tracking-wide">
               

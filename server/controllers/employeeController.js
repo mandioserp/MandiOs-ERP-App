@@ -1,5 +1,5 @@
 import { Employee, Salary, SalaryAdvance, Expense, AuditLog } from '../models/index.js';
-import { buildTenantQuery, getTenantId } from '../utils/tenant.js';
+import { assertTenantOwnership, buildTenantQuery, getTenantId } from '../utils/tenant.js';
 
 // Helper to generate a unique employee ID
 async function generateEmployeeId() {
@@ -89,6 +89,7 @@ export async function editEmployee(req, res) {
     if (!employee || employee.isDeleted) {
       return res.status(404).json({ error: 'Employee not found.' });
     }
+    if (!assertTenantOwnership(req, employee)) return res.status(404).json({ error: 'Employee not found.' });
 
     const tenantId = getTenantId(req) || employee.tenantId || 'tenant_default_001';
 
@@ -118,6 +119,7 @@ export async function deleteEmployee(req, res) {
     if (!employee) {
       return res.status(404).json({ error: 'Employee not found.' });
     }
+    if (!assertTenantOwnership(req, employee)) return res.status(404).json({ error: 'Employee not found.' });
 
     const tenantId = getTenantId(req) || employee.tenantId || 'tenant_default_001';
     const now = new Date();
@@ -252,12 +254,18 @@ export async function editSalary(req, res) {
     if (!salary || salary.isDeleted) {
       return res.status(404).json({ error: 'Salary record not found.' });
     }
+    if (!assertTenantOwnership(req, salary)) return res.status(404).json({ error: 'Salary record not found.' });
 
     const tenantId = getTenantId(req) || salary.tenantId || 'tenant_default_001';
 
     const employee = await Employee.findById(salary.employeeId);
     if (!employee) {
       return res.status(404).json({ error: 'Employee not found.' });
+    }
+    if (!assertTenantOwnership(req, employee)) return res.status(404).json({ error: 'Salary record not found.' });
+    if (salary.expenseReference) {
+      const expense = await Expense.findById(salary.expenseReference);
+      if (expense && !assertTenantOwnership(req, expense)) return res.status(404).json({ error: 'Salary record not found.' });
     }
 
     const updatedBasic = basicSalary !== undefined ? Number(basicSalary) : salary.basicSalary;
@@ -342,6 +350,11 @@ export async function deleteSalary(req, res) {
     if (!salary) {
       return res.status(404).json({ error: 'Salary record not found.' });
     }
+    if (!assertTenantOwnership(req, salary)) return res.status(404).json({ error: 'Salary record not found.' });
+    if (salary.expenseReference) {
+      const expense = await Expense.findById(salary.expenseReference);
+      if (expense && !assertTenantOwnership(req, expense)) return res.status(404).json({ error: 'Salary record not found.' });
+    }
 
     const tenantId = getTenantId(req) || salary.tenantId || 'tenant_default_001';
 
@@ -395,6 +408,7 @@ export async function addAdvance(req, res) {
     if (!employee) {
       return res.status(404).json({ error: 'Employee not found.' });
     }
+    if (!assertTenantOwnership(req, employee)) return res.status(404).json({ error: 'Employee not found.' });
 
     const advance = await SalaryAdvance.create({
       tenantId,
@@ -432,6 +446,7 @@ export async function deleteAdvance(req, res) {
     if (!advance) {
       return res.status(404).json({ error: 'Advance not found.' });
     }
+    if (!assertTenantOwnership(req, advance)) return res.status(404).json({ error: 'Advance not found.' });
 
     const tenantId = getTenantId(req) || advance.tenantId || 'tenant_default_001';
 
