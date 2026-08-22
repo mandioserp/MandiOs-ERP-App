@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { WifiOff, Wifi, RefreshCw, AlertTriangle } from 'lucide-react';
+import { apiBaseUrl } from '../../utils/api.js';
 
 export default function NetworkStatusBanner() {
   const [isOnline, setIsOnline] = useState(
@@ -39,8 +40,8 @@ export default function NetworkStatusBanner() {
   const handleManualRetry = async () => {
     setIsChecking(true);
     try {
-      // Ping check
-      await fetch('/api/health', { method: 'HEAD', cache: 'no-store' });
+      const apiOrigin = apiBaseUrl.replace(/\/api\/?$/, '');
+      await fetch(`${apiOrigin}/health`, { method: 'HEAD', cache: 'no-store' });
       setIsOnline(true);
       setShowReconnectedAlert(true);
       setTimeout(() => setShowReconnectedAlert(false), 4000);

@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const apiBaseUrl = import.meta.env.VITE_API_URL || 'https://mandios-erp-app-production.up.railway.app/api';
+export const apiBaseUrl = import.meta.env.VITE_API_URL || 'https://api.mandioserp.com/api';
 
 const api = axios.create({
   baseURL: apiBaseUrl,

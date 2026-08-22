@@ -10,6 +10,12 @@ import apiRoutes from './routes/api.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const allowedOrigins = [
+  'https://www.mandioserp.com',
+  'https://mandioserp.com',
+  'https://mandioserp.vercel.app',
+  'http://localhost:5173',
+];
 
 if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
   console.error('Server startup failed: JWT_SECRET is required in production.');
@@ -19,7 +25,10 @@ if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
 // --------------------------------------------------
 // Middleware
 // --------------------------------------------------
-app.use(cors());
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true,
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
